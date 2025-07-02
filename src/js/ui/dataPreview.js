@@ -236,7 +236,7 @@ class DataPreview {
             html += `<td class="text-center text-xs text-base-content/50">${startRowNumber + index}</td>`;
             columns.forEach(column => {
                 const value = row[column];
-                const displayValue = this.formatCellValue(value);
+                const displayValue = this.formatCellValue(value, column); // 传递列名
                 html += `<td class="max-w-[200px] truncate" title="${this.escapeHtml(String(value))}">${displayValue}</td>`;
             });
             html += '</tr>';
@@ -250,9 +250,10 @@ class DataPreview {
     /**
      * 格式化单元格值
      * @param {any} value - 单元格值
+     * @param {string} columnName - 列名（用于判断是否为日期列）
      * @returns {string} 格式化后的值
      */
-    formatCellValue(value) {
+    formatCellValue(value, columnName = '') {
         if (value === null || value === undefined) {
             return '<span class="text-base-content/30 italic">null</span>';
         }
@@ -261,17 +262,7 @@ class DataPreview {
             return '<span class="text-base-content/30 italic">空</span>';
         }
         
-        // 检查是否为数字
-        if (typeof value === 'number') {
-            return value.toLocaleString();
-        }
-        
-        // 检查是否为日期
-        if (this.isDate(value)) {
-            return new Date(value).toLocaleDateString();
-        }
-        
-        // 长文本截断
+        // 完全不进行格式化，直接显示原始字符串
         const stringValue = String(value);
         if (stringValue.length > 50) {
             return this.escapeHtml(stringValue.substring(0, 50)) + '...';
@@ -281,13 +272,51 @@ class DataPreview {
     }
 
     /**
-     * 检查是否为日期
-     * @param {any} value - 值
-     * @returns {boolean} 是否为日期
+     * 检查列名是否为日期列
+     * @param {string} columnName - 列名
+     * @returns {boolean} 是否为日期列
      */
-    isDate(value) {
-        return value instanceof Date || 
-               (typeof value === 'string' && !isNaN(Date.parse(value)) && /\d{4}-\d{2}-\d{2}/.test(value));
+    isDateColumn(columnName) {
+        if (!columnName) return false;
+        
+        const lowerColumnName = columnName.toLowerCase();
+        const dateKeywords = [
+            '日期', '时间', '投放日期', '报告日期', '统计日期', '创建时间', '更新时间',
+            'date', 'time', 'created', 'updated', 'report', 'stat'
+        ];
+        
+        return dateKeywords.some(keyword => lowerColumnName.includes(keyword));
+    }
+
+    /**
+     * 检查是否为真正的日期格式（严格检查）
+     * @param {any} value - 值
+     * @returns {boolean} 是否为真正的日期
+     */
+    isActualDate(value) {
+        // 首先检查是否为Date对象
+        if (value instanceof Date) {
+            return !isNaN(value.getTime());
+        }
+        
+        // 对于字符串，使用严格的日期格式检查
+        if (typeof value === 'string') {
+            const strictDatePatterns = [
+                /^\d{4}-\d{1,2}-\d{1,2}$/,     // YYYY-MM-DD 或 YYYY-M-D
+                /^\d{1,2}\/\d{1,2}\/\d{4}$/,   // MM/DD/YYYY 或 M/D/YYYY（完整年份）
+                /^\d{4}\/\d{1,2}\/\d{1,2}$/,   // YYYY/MM/DD 或 YYYY/M/D
+                /^\d{1,2}-\d{1,2}-\d{4}$/      // MM-DD-YYYY 或 M-D-YYYY（完整年份）
+            ];
+            
+            // 必须匹配严格格式并且能被正确解析
+            const matchesPattern = strictDatePatterns.some(pattern => pattern.test(value));
+            if (!matchesPattern) return false;
+            
+            const parsedDate = new Date(value);
+            return !isNaN(parsedDate.getTime());
+        }
+        
+        return false;
     }
 
     /**

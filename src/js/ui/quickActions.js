@@ -139,12 +139,7 @@ class QuickActions {
             const monthStart = new Date(targetYear, targetMonth, 1);
             const monthEnd = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
 
-            logger.info('目标月份范围', { 
-                year: targetYear,
-                month: targetMonth + 1,
-                start: formatter.formatDate(monthStart), 
-                end: formatter.formatDate(monthEnd) 
-            });
+
 
             // 步骤2: 提取首个表格文件的首个Sheet的第一行作为表头
             if (!allFiles[0] || !allFiles[0].data || allFiles[0].data.length === 0) {
@@ -153,8 +148,6 @@ class QuickActions {
 
             const firstFileData = Array.isArray(allFiles[0].data) ? allFiles[0].data : [allFiles[0].data];
             const headers = Object.keys(firstFileData[0]);
-            
-            logger.info('提取表头', { headers, source: allFiles[0].fileName });
 
             // 步骤3: 获取上传的所有表格的首个Sheet内的日期时间列
             let dateColumn = null;
@@ -202,7 +195,7 @@ class QuickActions {
                 throw new Error(`未找到日期列。\n可用列: ${headerInfo}\n支持的日期列名：${dateColumns.join(', ')}`);
             }
 
-            logger.info('找到日期列', { dateColumn });
+
 
             // 步骤4: 整合所有文件的数据，筛选当前月份
             let allData = [];
@@ -211,8 +204,6 @@ class QuickActions {
             for (const fileData of allFiles) {
                 const dataArray = Array.isArray(fileData.data) ? fileData.data : [fileData.data];
                 totalOriginalRows += dataArray.length;
-                
-                logger.info(`处理文件: ${fileData.fileName}`, { rows: dataArray.length });
                 
                 // 筛选当月数据
                 const monthlyData = dataArray.filter(row => {
@@ -228,10 +219,7 @@ class QuickActions {
                 allData = allData.concat(monthlyData);
             }
 
-            logger.info('当月数据整合完成', { 
-                originalRows: totalOriginalRows,
-                monthlyRows: allData.length 
-            });
+
 
             if (allData.length === 0) {
                 // 分析数据中实际存在的月份
@@ -269,8 +257,6 @@ class QuickActions {
             // 步骤5: F列数据筛选
             const columnF = headers[5]; // F列是第6列（索引5）
             if (columnF && allData.length > 0) {
-                logger.info('开始F列筛选', { column: columnF });
-                
                 const beforeFFilter = allData.length;
                 allData = allData.filter(row => {
                     const fValue = row[columnF];
@@ -288,33 +274,16 @@ class QuickActions {
                     
                     return true;
                 });
-                
-                logger.info('F列筛选完成', { 
-                    column: columnF,
-                    before: beforeFFilter,
-                    after: allData.length 
-                });
             }
 
-            // 步骤6: 按日期排序（最新日期在上）
+            // 步骤6: 按日期智能排序（最新日期在上）
             if (allData.length > 0) {
                 allData.sort((a, b) => {
-                    const dateA = new Date(a[dateColumn]);
-                    const dateB = new Date(b[dateColumn]);
-                    return dateB.getTime() - dateA.getTime(); // 降序，最新在前
+                    return this._smartCompareValues(a[dateColumn], b[dateColumn], true, true);
                 });
-                
-                logger.info('日期排序完成', { sortColumn: dateColumn });
             }
 
             const resultMessage = `成功处理本月资源位数据：${allData.length} 条记录`;
-            
-            logger.info('筛选本月数据完成', {
-                totalOriginalRows,
-                finalRows: allData.length,
-                dateColumn,
-                fColumn: headers[5] || 'F列不存在'
-            });
 
             return {
                 success: true,
@@ -472,7 +441,7 @@ class QuickActions {
     }
 
     /**
-     * 按时间排序
+     * 按时间排序 - 智能排序不进行数据转换
      * @param {Array} data - 输入数据
      * @param {Object} options - 选项参数
      * @returns {Object} 处理结果
@@ -494,15 +463,9 @@ class QuickActions {
 
             const descending = options.descending !== false; // 默认降序
 
-            // 排序数据
+            // 智能排序数据，不进行格式转换
             const sortedData = [...data].sort((a, b) => {
-                const dateA = new Date(a[timeColumn]);
-                const dateB = new Date(b[timeColumn]);
-                
-                if (isNaN(dateA.getTime())) return 1;
-                if (isNaN(dateB.getTime())) return -1;
-                
-                return descending ? dateB - dateA : dateA - dateB;
+                return this._smartCompareValues(a[timeColumn], b[timeColumn], descending, true);
             });
 
             logger.info('时间排序完成', { 
@@ -702,6 +665,51 @@ class QuickActions {
         ];
         
         return datePatterns.some(pattern => pattern.test(str));
+    }
+
+    /**
+     * 智能值比较 - 不进行数据转换的排序
+     * @param {*} valueA - 值A
+     * @param {*} valueB - 值B
+     * @param {boolean} descending - 是否降序
+     * @param {boolean} treatAsDate - 是否当作日期处理
+     * @returns {number} 比较结果
+     */
+    _smartCompareValues(valueA, valueB, descending = false, treatAsDate = false) {
+        // 处理空值
+        if (!valueA && !valueB) return 0;
+        if (!valueA) return descending ? 1 : -1;
+        if (!valueB) return descending ? -1 : 1;
+
+        const strA = valueA.toString();
+        const strB = valueB.toString();
+
+        // 如果明确指定为日期处理，且值看起来像日期
+        if (treatAsDate && this._isDateValue(strA) && this._isDateValue(strB)) {
+            // 尝试按日期比较，但不修改原始数据
+            const dateA = new Date(strA);
+            const dateB = new Date(strB);
+            
+            if (!isNaN(dateA.getTime()) && !isNaN(dateB.getTime())) {
+                const result = dateA.getTime() - dateB.getTime();
+                return descending ? -result : result;
+            }
+        }
+
+        // 检查是否为数字值（但不是分数格式）
+        if (!strA.includes('/') && !strB.includes('/')) {
+            const numA = parseFloat(strA.replace('%', ''));
+            const numB = parseFloat(strB.replace('%', ''));
+            
+            if (!isNaN(numA) && !isNaN(numB)) {
+                const result = numA - numB;
+                return descending ? -result : result;
+            }
+        }
+
+        // 字符串比较
+        const result = strA.localeCompare(strB, 'zh-CN', { numeric: true });
+        return descending ? -result : result;
     }
 
     /**

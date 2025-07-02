@@ -383,6 +383,16 @@ class RuleXcelApp {
             // 执行增强版月份数据筛选（传入所有文件数据和选择的月份）
             const result = await this.quickActions.executeAction('filterCurrentMonth', this.parsedData, selectedMonth);
             
+            // 调试信息：记录筛选结果
+            logger.info('月份筛选操作结果', {
+                success: result.success,
+                dataLength: result.data ? result.data.length : 0,
+                headersLength: result.headers ? result.headers.length : 0,
+                message: result.message,
+                hasData: result.data && result.data.length > 0,
+                hasHeaders: result.headers && result.headers.length > 0
+            });
+            
             if (result.success && result.data.length > 0) {
                 this.processedData = result.data;
                 this.dataPreview.setProcessedData(result.data);
@@ -582,32 +592,121 @@ class RuleXcelApp {
      */
     async exportFilteredMonthData(data, headers, monthStr = '本月') {
         try {
-            logger.info('开始导出本月资源位数据', { rows: data.length });
-            
-            // 准备数据
-            const exportData = data.map(row => {
-                const orderedRow = {};
-                headers.forEach(header => {
-                    orderedRow[header] = row[header] || '';
-                });
-                return orderedRow;
+            logger.info('开始导出本月资源位数据', { 
+                rows: data.length, 
+                headers: headers ? headers.length : 0,
+                monthStr: monthStr 
             });
+            
+            // 数据验证和调试信息
+            if (!data || data.length === 0) {
+                throw new Error('没有可导出的数据');
+            }
+            
+            // 智能检测实际数据的列名（防止headers与实际数据不匹配）
+            const actualHeaders = data.length > 0 ? Object.keys(data[0]) : [];
+            const finalHeaders = headers && headers.length > 0 ? headers : actualHeaders;
+            
+            logger.info('数据结构分析', {
+                传入headers: headers,
+                实际数据列名: actualHeaders,
+                最终使用headers: finalHeaders,
+                数据样本: data.length > 0 ? data[0] : null
+            });
+            
+            // 准备导出数据 - 改进逻辑，确保数据完整性
+            let exportData;
+            
+            if (finalHeaders.length > 0) {
+                // 使用指定的列顺序重新组织数据
+                exportData = data.map((row, index) => {
+                    const orderedRow = {};
+                    finalHeaders.forEach(header => {
+                        let value = row[header];
+                        
+                        // 增强数据清理：处理可能导致问题的值
+                        if (value === null || value === undefined) {
+                            value = '';
+                        } else if (typeof value === 'object' && value !== null) {
+                            // 处理对象类型（包括Date对象）
+                            if (value instanceof Date) {
+                                value = value.toISOString().split('T')[0]; // 转换为YYYY-MM-DD格式
+                            } else {
+                                value = JSON.stringify(value);
+                            }
+                        } else if (typeof value === 'function') {
+                            value = '[Function]';
+                        } else if (typeof value === 'symbol') {
+                            value = '[Symbol]';
+                        } else {
+                            // 确保是字符串
+                            value = String(value);
+                        }
+                        
+                        orderedRow[header] = value;
+                    });
+                    
+                
+                    
+                    return orderedRow;
+                });
+            } else {
+                // 如果没有有效的headers，直接使用原始数据
+                exportData = data;
+                logger.warn('使用原始数据结构导出（未找到有效的headers）');
+            }
+            
+            // 最终验证导出数据
+            if (!exportData || exportData.length === 0) {
+                throw new Error('导出数据处理后为空');
+            }
+            
+            // 检查导出数据的完整性
+            const hasValidData = exportData.some(row => {
+                return Object.values(row).some(value => value !== '' && value !== null && value !== undefined);
+            });
+            
+            if (!hasValidData) {
+                logger.error('警告：导出数据中所有值都为空', {
+                    exportData: exportData.slice(0, 2), // 只记录前两行用于调试
+                    headers: finalHeaders
+                });
+                throw new Error('导出数据中所有值都为空，请检查数据结构是否正确');
+            }
             
             // 使用导出器导出Excel
             const fileName = `${monthStr}资源位数据.xlsx`;
             const sheetName = `${monthStr}资源位数据`;
             
-            const result = await this.exporter.exportToExcel(exportData, {
-                filename: fileName,
-                sheetName: sheetName
-            });
+
+            
+            let result;
+            
+            // 使用基础导出方法（支持路径选择）
+            try {
+                result = await this._exportWithBasicMethod(exportData, finalHeaders, fileName, sheetName);
+            } catch (basicError) {
+                logger.error('基础导出方法失败，尝试标准导出器', basicError);
+                
+                // 备用方案：使用标准导出器
+                try {
+                    result = await this.exporter.exportToExcel(exportData, {
+                        filename: fileName,
+                        sheetName: sheetName
+                    });
+                } catch (exportError) {
+                    logger.error('所有导出方案都失败', exportError);
+                    throw new Error(`导出失败: ${basicError.message} / ${exportError.message}`);
+                }
+            }
             
             if (result.success) {
                 this.showNotification(`${monthStr}资源位数据导出成功`, 'success');
                 logger.userAction(`导出${monthStr}资源位数据`, {
                     fileName: fileName,
                     rows: exportData.length,
-                    columns: headers.length
+                    columns: finalHeaders.length,
+                    actualColumns: actualHeaders.length
                 });
             } else {
                 throw new Error(result.message || '导出失败');
@@ -617,6 +716,103 @@ class RuleXcelApp {
             logger.error('导出本月数据失败', error);
             throw error;
         }
+    }
+
+    /**
+     * 基础导出方法（绕过复杂的数据预处理）
+     * @param {Array} data - 原始数据
+     * @param {Array} headers - 表头
+     * @param {string} fileName - 文件名
+     * @param {string} sheetName - 工作表名
+     * @returns {Promise<Object>} 导出结果
+     */
+    async _exportWithBasicMethod(data, headers, fileName, sheetName) {
+        try {
+            logger.info('使用基础导出方法', { rows: data.length, headers: headers.length });
+            
+            // 直接使用XLSX库，不进行复杂的数据预处理
+            const XLSX = window.XLSX;
+            
+            // 创建工作簿
+            const wb = XLSX.utils.book_new();
+            
+            // 直接使用原始数据创建工作表
+            const ws = XLSX.utils.json_to_sheet(data);
+            
+            // 添加工作表到工作簿
+            XLSX.utils.book_append_sheet(wb, ws, sheetName);
+            
+            // 生成Excel文件
+            const wbout = XLSX.write(wb, { 
+                bookType: 'xlsx', 
+                type: 'array' 
+            });
+            
+            // 创建Blob并下载
+            const blob = new Blob([wbout], { 
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+            });
+            
+            // 优先使用文件系统API让用户选择保存路径
+            if (window.showSaveFilePicker) {
+                try {
+                    const fileHandle = await window.showSaveFilePicker({
+                        suggestedName: fileName,
+                        types: [{
+                            description: 'Excel文件 (*.xlsx)',
+                            accept: {
+                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+                            }
+                        }],
+                        excludeAcceptAllOption: false
+                    });
+                    
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(wbout);
+                    await writable.close();
+                    
+                    const savedFileName = fileHandle.name;
+                    
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        throw new Error('用户取消了保存操作');
+                    } else {
+                        logger.warn('文件系统访问API失败，回退到传统方法', error);
+                        // 继续执行传统下载方法
+                        this._performTraditionalDownload(blob, fileName);
+                    }
+                }
+            } else {
+                this._performTraditionalDownload(blob, fileName);
+            }
+            
+            return { 
+                success: true, 
+                filename: fileName,
+                method: 'basic'
+            };
+            
+        } catch (error) {
+            logger.error('基础导出方法失败', error);
+            throw error;
+        }
+    }
+
+    /**
+     * 执行传统下载方法
+     * @param {Blob} blob - 文件Blob对象
+     * @param {string} fileName - 文件名
+     */
+    _performTraditionalDownload(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     }
 
     /**

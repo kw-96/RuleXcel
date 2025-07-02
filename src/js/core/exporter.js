@@ -36,31 +36,50 @@ class Exporter {
                 rows: data.length, 
                 filename: config.filename 
             });
+            
+            logger.info('导出器配置检查', {
+                config: config,
+                dataType: Array.isArray(data) ? 'array' : typeof data,
+                firstRowType: data.length > 0 ? typeof data[0] : 'undefined'
+            });
 
-            // 预处理数据，防止自动日期转换
-            const processedData = this._preprocessDataForExport(data);
+            // 使用智能数据预处理，只对确定的日期列进行保护
+            const processedData = this._intelligentPreprocessDataForExport(data);
+            logger.info('智能数据预处理完成', { originalRows: data.length, finalRows: processedData.length });
 
             // 创建工作簿
             const wb = this.XLSX.utils.book_new();
             
-            // 创建工作表，使用特殊选项防止日期自动转换
-            const ws = this.XLSX.utils.json_to_sheet(processedData, {
-                header: config.includeHeaders ? Object.keys(processedData[0]) : undefined,
-                cellDates: false,  // 防止自动日期转换
-                dateNF: '@',       // 将日期格式设为文本
-                raw: false         // 禁用原始值处理，强制文本处理
+            // 创建工作表，使用简化选项（调试模式）
+            logger.info('准备创建工作表', {
+                dataLength: processedData.length,
+                firstRowSample: processedData[0],
+                dataKeys: processedData.length > 0 ? Object.keys(processedData[0]) : [],
+                dataValues: processedData.length > 0 ? Object.values(processedData[0]) : []
+            });
+            
+            const ws = this.XLSX.utils.json_to_sheet(processedData);
+            
+            // 详细检查工作表内容
+            const allKeys = Object.keys(ws);
+            const cellKeys = allKeys.filter(key => key !== '!ref' && key !== '!margins');
+            const sampleCells = {};
+            ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'].forEach(cell => {
+                if (ws[cell]) {
+                    sampleCells[cell] = ws[cell];
+                }
+            });
+            
+            logger.info('工作表创建完成', { 
+                range: ws['!ref'],
+                totalKeys: allKeys.length,
+                cellCount: cellKeys.length,
+                sampleCells: sampleCells,
+                hasData: cellKeys.length > 0
             });
 
-            // 为工作表设置列格式为文本（防止Excel自动转换）
-            this._setWorksheetTextFormat(ws, processedData);
-            
-            // 额外保护：为整个工作表设置默认格式
-            if (!ws['!cols']) ws['!cols'] = [];
-            const headers = Object.keys(processedData[0]);
-            headers.forEach((header, index) => {
-                if (!ws['!cols'][index]) ws['!cols'][index] = {};
-                ws['!cols'][index].z = '@'; // 设置列格式为文本
-            });
+            // 智能设置工作表格式，只对日期列进行特殊处理
+            this._intelligentSetWorksheetFormat(ws, processedData);
 
             // 添加工作表到工作簿
             this.XLSX.utils.book_append_sheet(wb, ws, config.sheetName);
@@ -330,8 +349,16 @@ class Exporter {
                         excludeAcceptAllOption: false
                     });
                     
-                    const writable = await fileHandle.createWritable();
+                    // 生成二进制数据并检查
                     const buffer = this.XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+                    logger.info('工作簿写入检查', {
+                        bufferSize: buffer.byteLength,
+                        bufferType: buffer.constructor.name,
+                        isEmpty: buffer.byteLength === 0,
+                        firstBytes: Array.from(buffer.slice(0, 10))
+                    });
+                    
+                    const writable = await fileHandle.createWritable();
                     await writable.write(buffer);
                     await writable.close();
                     
@@ -532,7 +559,33 @@ class Exporter {
     }
 
     /**
-     * 预处理数据，防止自动日期转换
+     * 智能预处理数据，只对确定的日期列进行保护
+     * @param {Array} data - 数据数组
+     * @returns {Array} 预处理后的数据数组
+     */
+    _intelligentPreprocessDataForExport(data) {
+        if (!data || data.length === 0) return data;
+        
+        const headers = Object.keys(data[0]);
+        const dateColumns = this._identifyDateColumns(headers);
+        
+        return data.map(row => {
+            const processedRow = {};
+            for (const key in row) {
+                // 只对确定的日期列进行日期保护处理
+                if (dateColumns.includes(key)) {
+                    processedRow[key] = this._preprocessDateValueForExport(row[key]);
+                } else {
+                    // 其他列保持原始格式
+                    processedRow[key] = row[key];
+                }
+            }
+            return processedRow;
+        });
+    }
+
+    /**
+     * 预处理数据，防止自动日期转换（旧版本，保留兼容性）
      * @param {Array} data - 数据数组
      * @returns {Array} 预处理后的数据数组
      */
@@ -543,6 +596,91 @@ class Exporter {
                 processedRow[key] = this._preprocessValueForExport(row[key]);
             }
             return processedRow;
+        });
+    }
+
+    /**
+     * 识别日期列
+     * @param {Array} headers - 列名数组
+     * @returns {Array} 日期列名数组
+     */
+    _identifyDateColumns(headers) {
+        const dateKeywords = [
+            '日期', '时间', '投放日期', '报告日期', '统计日期', '创建时间', '更新时间',
+            'date', 'time', 'created', 'updated', 'report', 'stat'
+        ];
+        
+        return headers.filter(header => {
+            const lowerHeader = header.toLowerCase();
+            return dateKeywords.some(keyword => lowerHeader.includes(keyword));
+        });
+    }
+
+    /**
+     * 预处理日期值，防止自动日期转换
+     * @param {any} value - 日期值
+     * @returns {any} 预处理后的值
+     */
+    _preprocessDateValueForExport(value) {
+        if (value === null || value === undefined || value === '') {
+            return value;
+        }
+
+        const stringValue = String(value);
+        
+        // 对于日期列，如果确实是日期格式，进行保护
+        if (this._isActualDateFormat(stringValue)) {
+            return `'${stringValue}`; // 单引号前缀，Excel传统的文本强制标记
+        }
+        
+        return value;
+    }
+
+    /**
+     * 检查是否为真正的日期格式（更严格的检查）
+     * @param {string} value - 字符串值
+     * @returns {boolean} 是否为真正的日期格式
+     */
+    _isActualDateFormat(value) {
+        if (typeof value !== 'string') {
+            return false;
+        }
+        
+        // 只对标准日期格式进行保护，避免误伤分数和百分比
+        const strictDatePatterns = [
+            /^\d{4}-\d{1,2}-\d{1,2}$/,     // YYYY-MM-DD 格式
+            /^\d{1,2}\/\d{1,2}\/\d{4}$/,   // MM/DD/YYYY 格式（完整年份）
+            /^\d{4}\/\d{1,2}\/\d{1,2}$/,   // YYYY/MM/DD 格式
+            /^\d{1,2}-\d{1,2}-\d{4}$/      // MM-DD-YYYY 格式（完整年份）
+        ];
+
+        return strictDatePatterns.some(pattern => pattern.test(value));
+    }
+
+    /**
+     * 智能设置工作表格式
+     * @param {Object} worksheet - XLSX工作表对象
+     * @param {Array} data - 数据数组
+     */
+    _intelligentSetWorksheetFormat(worksheet, data) {
+        if (!data || data.length === 0) return;
+        
+        const headers = Object.keys(data[0]);
+        const dateColumns = this._identifyDateColumns(headers);
+        
+        // 只对日期列设置文本格式保护
+        if (!worksheet['!cols']) worksheet['!cols'] = [];
+        
+        headers.forEach((header, index) => {
+            if (!worksheet['!cols'][index]) worksheet['!cols'][index] = {};
+            
+            if (dateColumns.includes(header)) {
+                // 日期列：设置为文本格式以保护日期格式
+                worksheet['!cols'][index].z = '@';
+            } else {
+                // 其他列：保持默认格式，让Excel自动识别
+                // 不设置特殊格式，保持数据原始性
+            }
         });
     }
 
