@@ -425,16 +425,17 @@ class RuleXcelApp {
 
     /**
      * 显示月份选择器
+     * @param {string} title - 标题（可选）
      * @returns {Promise<Object|null>} 选择的月份信息或null（取消）
      */
-    async showMonthSelector() {
+    async showMonthSelector(title = '选择月份') {
         return new Promise((resolve) => {
             // 创建模态框
             const modal = document.createElement('div');
             modal.className = 'modal modal-open';
             modal.innerHTML = `
                 <div class="modal-box">
-                    <h3 class="font-bold text-lg mb-4">选择要筛选的月份</h3>
+                    <h3 class="font-bold text-lg mb-4">${title}</h3>
                     <div class="form-control w-full max-w-xs mx-auto">
                         <label class="label">
                             <span class="label-text">年份</span>
@@ -582,6 +583,228 @@ class RuleXcelApp {
             };
             document.addEventListener('keydown', handleEscape);
         });
+    }
+
+    /**
+     * 显示优质资源位导出确认对话框
+     * @param {string} monthStr - 月份描述
+     * @param {number} dataLength - 数据长度
+     * @param {Object} stats - 统计信息
+     * @returns {Promise<boolean>} 是否导出
+     */
+    async showQualityExportConfirmDialog(monthStr, dataLength, stats) {
+        return new Promise((resolve) => {
+            // 创建模态框
+            const modal = document.createElement('div');
+            modal.className = 'modal modal-open';
+            modal.innerHTML = `
+                <div class="modal-box max-w-md">
+                    <h3 class="font-bold text-lg mb-4 flex items-center gap-2">
+                        <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                  d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
+                        </svg>
+                        导出${monthStr}优质资源位
+                    </h3>
+                    <div class="bg-base-200 p-4 rounded-lg mb-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="stat">
+                                <div class="stat-title text-xs">提取结果</div>
+                                <div class="stat-value text-lg text-yellow-600">${dataLength}</div>
+                                <div class="stat-desc text-xs">优质资源位</div>
+                            </div>
+                            <div class="stat">
+                                <div class="stat-title text-xs">原始数据</div>
+                                <div class="stat-value text-lg text-gray-500">${stats.original || 0}</div>
+                                <div class="stat-desc text-xs">总记录数</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-4">
+                        <p>📊 筛选条件：${stats.qualityCondition || 'F列 > G列'}且符合月份</p>
+                        <p>💾 文件将保存到浏览器默认下载目录</p>
+                        <p>📄 文件名：${monthStr}优质资源位.xlsx</p>
+                        <p>⏰ 预计时间：几秒钟</p>
+                    </div>
+                    <div class="modal-action">
+                        <button class="btn btn-primary gap-2" id="confirmBtn">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            立即导出
+                        </button>
+                        <button class="btn btn-ghost" id="cancelBtn">暂不导出</button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+
+            // 绑定事件
+            const confirmBtn = modal.querySelector('#confirmBtn');
+            const cancelBtn = modal.querySelector('#cancelBtn');
+
+            const cleanup = () => {
+                document.body.removeChild(modal);
+            };
+
+            confirmBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            });
+
+            cancelBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            });
+
+            // ESC键取消
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                    document.removeEventListener('keydown', handleEscape);
+                }
+            };
+            document.addEventListener('keydown', handleEscape);
+        });
+    }
+
+    /**
+     * 导出优质资源位数据为Excel
+     * @param {Array} data - 筛选后的数据
+     * @param {Array} headers - 表头
+     * @param {string} monthStr - 月份描述
+     * @param {Object} stats - 统计信息
+     */
+    async exportQualityResourcesData(data, headers, monthStr = '本月', stats = {}) {
+        try {
+            logger.info('开始导出优质资源位数据', { 
+                rows: data.length, 
+                headers: headers ? headers.length : 0,
+                monthStr: monthStr,
+                stats: stats
+            });
+            
+            // 数据验证和调试信息
+            if (!data || data.length === 0) {
+                throw new Error('没有可导出的优质资源位数据');
+            }
+            
+            // 智能检测实际数据的列名（防止headers与实际数据不匹配）
+            const actualHeaders = data.length > 0 ? Object.keys(data[0]) : [];
+            const finalHeaders = headers && headers.length > 0 ? headers : actualHeaders;
+            
+            logger.info('优质资源位数据结构分析', {
+                传入headers: headers,
+                实际数据列名: actualHeaders,
+                最终使用headers: finalHeaders,
+                数据样本: data.length > 0 ? data[0] : null
+            });
+            
+            // 准备导出数据 - 改进逻辑，确保数据完整性
+            let exportData;
+            
+            if (finalHeaders.length > 0) {
+                // 使用指定的列顺序重新组织数据
+                exportData = data.map((row, index) => {
+                    const orderedRow = {};
+                    finalHeaders.forEach(header => {
+                        let value = row[header];
+                        
+                        // 增强数据清理：处理可能导致问题的值
+                        if (value === null || value === undefined) {
+                            value = '';
+                        } else if (typeof value === 'object' && value !== null) {
+                            // 处理对象类型（包括Date对象）
+                            if (value instanceof Date) {
+                                value = value.toISOString().split('T')[0]; // 转换为YYYY-MM-DD格式
+                            } else {
+                                value = JSON.stringify(value);
+                            }
+                        } else if (typeof value === 'function') {
+                            value = '[Function]';
+                        } else if (typeof value === 'symbol') {
+                            value = '[Symbol]';
+                        } else {
+                            // 确保是字符串
+                            value = String(value);
+                        }
+                        
+                        orderedRow[header] = value;
+                    });
+                    
+                    return orderedRow;
+                });
+            } else {
+                // 如果没有有效的headers，直接使用原始数据
+                exportData = data;
+                logger.warn('使用原始数据结构导出优质资源位（未找到有效的headers）');
+            }
+            
+            // 最终验证导出数据
+            if (!exportData || exportData.length === 0) {
+                throw new Error('优质资源位导出数据处理后为空');
+            }
+            
+            // 检查导出数据的完整性
+            const hasValidData = exportData.some(row => {
+                return Object.values(row).some(value => value !== '' && value !== null && value !== undefined);
+            });
+            
+            if (!hasValidData) {
+                logger.error('警告：优质资源位导出数据中所有值都为空', {
+                    exportData: exportData.slice(0, 2), // 只记录前两行用于调试
+                    headers: finalHeaders
+                });
+                throw new Error('优质资源位导出数据中所有值都为空，请检查数据结构是否正确');
+            }
+            
+            // 使用导出器导出Excel
+            const fileName = `${monthStr}优质资源位.xlsx`;
+            const sheetName = `${monthStr}优质资源位`;
+            
+            let result;
+            
+            // 使用基础导出方法（支持路径选择）
+            try {
+                result = await this._exportWithBasicMethod(exportData, finalHeaders, fileName, sheetName);
+            } catch (basicError) {
+                logger.error('基础导出方法失败，尝试标准导出器', basicError);
+                
+                // 备用方案：使用标准导出器
+                try {
+                    result = await this.exporter.exportToExcel(exportData, {
+                        filename: fileName,
+                        sheetName: sheetName
+                    });
+                } catch (exportError) {
+                    logger.error('所有导出方案都失败', exportError);
+                    throw new Error(`导出失败: ${basicError.message} / ${exportError.message}`);
+                }
+            }
+            
+            if (result.success) {
+                this.showNotification(`${monthStr}优质资源位导出成功`, 'success');
+                logger.userAction(`导出${monthStr}优质资源位`, {
+                    fileName: fileName,
+                    rows: exportData.length,
+                    columns: finalHeaders.length,
+                    actualColumns: actualHeaders.length,
+                    qualityCondition: stats.qualityCondition,
+                    originalRows: stats.original,
+                    monthlyRows: stats.monthly,
+                    qualityRows: stats.quality
+                });
+            } else {
+                throw new Error(result.message || '优质资源位导出失败');
+            }
+            
+        } catch (error) {
+            logger.error('导出优质资源位数据失败', error);
+            throw error;
+        }
     }
 
     /**
@@ -825,21 +1048,49 @@ class RuleXcelApp {
         }
 
         try {
-            // 合并所有文件数据
-            let allData = [];
-            this.parsedData.forEach(fileData => {
-                let dataArray = Array.isArray(fileData.data) ? fileData.data : [fileData.data];
-                allData = allData.concat(dataArray);
-            });
+            // 弹出月份选择器
+            const selectedMonth = await this.showMonthSelector('提取优质资源位');
+            if (!selectedMonth) {
+                return; // 用户取消选择
+            }
 
-            // 执行快捷操作
-            const result = await this.quickActions.executeAction('extractQualityResources', allData);
+            const monthStr = `${selectedMonth.year}年${selectedMonth.month}月`;
+            this.showNotification(`正在提取${monthStr}优质资源位...`, 'info');
             
-            if (result.success) {
+            // 执行增强版优质资源位提取（传入所有文件数据和选择的月份）
+            const result = await this.quickActions.executeAction('extractQualityResources', this.parsedData, selectedMonth);
+            
+            // 调试信息：记录提取结果
+            logger.info('优质资源位提取操作结果', {
+                success: result.success,
+                dataLength: result.data ? result.data.length : 0,
+                headersLength: result.headers ? result.headers.length : 0,
+                message: result.message,
+                hasData: result.data && result.data.length > 0,
+                hasHeaders: result.headers && result.headers.length > 0
+            });
+            
+            if (result.success && result.data.length > 0) {
                 this.processedData = result.data;
                 this.dataPreview.setProcessedData(result.data);
                 this.showNotification(result.message, 'success');
                 logger.userAction('提取优质资源位', result.stats);
+                
+                // 步骤7: 询问用户是否导出Excel文件
+                setTimeout(async () => {
+                    try {
+                        const shouldExport = await this.showQualityExportConfirmDialog(monthStr, result.data.length, result.stats);
+                        if (shouldExport) {
+                            await this.exportQualityResourcesData(result.data, result.headers, monthStr, result.stats);
+                        }
+                    } catch (exportError) {
+                        logger.error('导出失败', exportError);
+                        this.showNotification(`导出失败: ${exportError.message}`, 'error');
+                    }
+                }, 500); // 短暂延迟以确保数据预览更新完成
+                
+            } else if (result.success && result.data.length === 0) {
+                this.showNotification(`没有找到符合条件的${monthStr}优质资源位`, 'warning');
             } else {
                 this.showNotification(result.message, 'error');
             }
