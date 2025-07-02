@@ -480,8 +480,20 @@ class RuleXcelApp {
             const yearSelect = modal.querySelector('#yearSelect');
             const monthSelect = modal.querySelector('#monthSelect');
 
+            // ESC键取消事件处理器
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(null);
+                }
+            };
+
+            // 统一清理函数，确保所有事件监听器都被移除
             const cleanup = () => {
-                document.body.removeChild(modal);
+                document.removeEventListener('keydown', handleEscape);
+                if (document.body.contains(modal)) {
+                    document.body.removeChild(modal);
+                }
             };
 
             confirmBtn.addEventListener('click', () => {
@@ -496,14 +508,7 @@ class RuleXcelApp {
                 resolve(null);
             });
 
-            // ESC键取消
-            const handleEscape = (e) => {
-                if (e.key === 'Escape') {
-                    cleanup();
-                    resolve(null);
-                    document.removeEventListener('keydown', handleEscape);
-                }
-            };
+            // 添加ESC键监听器
             document.addEventListener('keydown', handleEscape);
         });
     }
@@ -559,8 +564,20 @@ class RuleXcelApp {
             const confirmBtn = modal.querySelector('#confirmBtn');
             const cancelBtn = modal.querySelector('#cancelBtn');
 
+            // ESC键取消事件处理器
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                }
+            };
+
+            // 统一清理函数，确保所有事件监听器都被移除
             const cleanup = () => {
-                document.body.removeChild(modal);
+                document.removeEventListener('keydown', handleEscape);
+                if (document.body.contains(modal)) {
+                    document.body.removeChild(modal);
+                }
             };
 
             confirmBtn.addEventListener('click', () => {
@@ -573,14 +590,7 @@ class RuleXcelApp {
                 resolve(false);
             });
 
-            // ESC键取消
-            const handleEscape = (e) => {
-                if (e.key === 'Escape') {
-                    cleanup();
-                    resolve(false);
-                    document.removeEventListener('keydown', handleEscape);
-                }
-            };
+            // 添加ESC键监听器
             document.addEventListener('keydown', handleEscape);
         });
     }
@@ -645,8 +655,20 @@ class RuleXcelApp {
             const confirmBtn = modal.querySelector('#confirmBtn');
             const cancelBtn = modal.querySelector('#cancelBtn');
 
+            // ESC键取消事件处理器
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                }
+            };
+
+            // 统一清理函数，确保所有事件监听器都被移除
             const cleanup = () => {
-                document.body.removeChild(modal);
+                document.removeEventListener('keydown', handleEscape);
+                if (document.body.contains(modal)) {
+                    document.body.removeChild(modal);
+                }
             };
 
             confirmBtn.addEventListener('click', () => {
@@ -659,14 +681,7 @@ class RuleXcelApp {
                 resolve(false);
             });
 
-            // ESC键取消
-            const handleEscape = (e) => {
-                if (e.key === 'Escape') {
-                    cleanup();
-                    resolve(false);
-                    document.removeEventListener('keydown', handleEscape);
-                }
-            };
+            // 添加ESC键监听器
             document.addEventListener('keydown', handleEscape);
         });
     }
