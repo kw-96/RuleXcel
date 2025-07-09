@@ -17,6 +17,11 @@ import Exporter from './core/exporter.js';
 import validator from './utils/validator.js';
 import formatter from './utils/formatter.js';
 import logger from './utils/logger.js';
+import RuleConfigModal from './ui/ruleConfigModal.js';
+import ColumnMapper from './core/columnMapper.js';
+import RuleProcessor from './core/ruleProcessor.js';
+
+
 
 console.log('✅ main.js 模块导入语句执行完毕');
 
@@ -29,6 +34,8 @@ class RuleXcelApp {
         this.parsedData = []; // 存储解析后的数据
         this.processedData = null; // 存储处理后的数据
         this.isProcessing = false; // 处理状态标志
+        this.currentData = null; // 新增：保存上一步规则处理结果
+        this.dataHistory = []; // 新增：数据历史栈
         
         // 初始化组件
         this.initializeComponents();
@@ -53,6 +60,16 @@ class RuleXcelApp {
         this.progressManager = new ProgressManager();
         this.quickActions = QuickActions; // QuickActions导出的是实例，不是类
         this.exporter = Exporter; // Exporter导出的是实例，不是类
+        
+        // 初始化规则配置相关组件
+        this.columnMapper = new ColumnMapper([]);
+        this.ruleConfigModal = new RuleConfigModal(this.columnMapper);
+        this.ruleProcessor = new RuleProcessor([], this.columnMapper);
+        
+        // 设置规则配置回调
+        this.ruleConfigModal.setOnConfig((config) => {
+            this.handleRuleConfig(config);
+        });
         
         // 初始化日志记录
         logger.info('RuleXcel应用组件初始化完成');
@@ -145,6 +162,23 @@ class RuleXcelApp {
         document.getElementById('apply-rules')?.addEventListener('click', () => {
             this.handleApplyRules();
         });
+
+        // 4个核心规则按钮事件绑定
+        document.getElementById('filterBtn')?.addEventListener('click', () => {
+            this.handleFilterConfig();
+        });
+
+        document.getElementById('sortBtn')?.addEventListener('click', () => {
+            this.handleSortConfig();
+        });
+
+        document.getElementById('processBtn')?.addEventListener('click', () => {
+            this.handleProcessConfig();
+        });
+
+        document.getElementById('mergeBtn')?.addEventListener('click', () => {
+            this.handleMergeConfig();
+        });
     }
 
     /**
@@ -176,16 +210,26 @@ class RuleXcelApp {
         document.addEventListener('drop', (e) => e.preventDefault());
 
         // 全局错误处理
-        window.addEventListener('error', (event) => {
-            console.error('全局错误:', event.error);
-            this.showNotification('应用出现错误，请刷新页面重试', 'error');
-        });
+        window.onerror = function(message, source, lineno, colno, error) {
+            if (
+                (typeof message === 'string' && message.includes('user activation is required')) ||
+                (error && error.message && error.message.includes('user activation is required'))
+            ) {
+                return true; // 阻止默认处理
+            }
+            console.error('全局错误:', error || message);
+        };
 
         // 未处理的Promise错误
-        window.addEventListener('unhandledrejection', (event) => {
+        window.onunhandledrejection = function(event) {
+            if (
+                event && event.reason && typeof event.reason.message === 'string' &&
+                event.reason.message.includes('user activation is required')
+            ) {
+                return true;
+            }
             console.error('未处理的Promise错误:', event.reason);
-            this.showNotification('处理过程中出现错误', 'error');
-        });
+        };
     }
 
     /**
@@ -217,7 +261,7 @@ class RuleXcelApp {
         // 验证文件
         const validFiles = this.validateFiles(files);
         if (validFiles.length === 0) {
-            this.showNotification('没有有效的文件可上传', 'warning');
+            console.log('⚠️ 没有有效的文件可上传');
             return;
         }
 
@@ -264,12 +308,12 @@ class RuleXcelApp {
             this.dataPreview.setOriginalData(results);
 
             this.progressManager.complete('文件解析完成');
-            this.showNotification(`成功上传 ${results.length} 个文件`, 'success');
+            console.log(`成功上传 ${results.length} 个文件`);
 
         } catch (error) {
             console.error('文件解析失败:', error);
             this.progressManager.error(`文件解析失败: ${error.message}`);
-            this.showNotification(`文件解析失败: ${error.message}`, 'error');
+            console.error(`文件解析失败: ${error.message}`);
         }
     }
 
@@ -283,7 +327,7 @@ class RuleXcelApp {
         
         // 显示验证错误
         validation.invalidFiles.forEach(({ file, error }) => {
-            this.showNotification(`文件 "${file.name}": ${error}`, 'error');
+            console.error(`文件 "${file.name}": ${error}`);
             logger.error('文件验证失败', { filename: file.name, error });
         });
 
@@ -353,11 +397,13 @@ class RuleXcelApp {
                 document.getElementById('file-list')?.classList.add('hidden');
                 this.dataPreview.clear();
                 this.processedData = null;
+                this.currentData = null; // 重置 currentData
             } else {
                 this.dataPreview.setOriginalData(this.parsedData);
+                this.currentData = null; // 重置 currentData
             }
             
-            this.showNotification(`文件 ${fileName} 已删除`, 'info');
+            console.log(`文件 ${fileName} 已删除`);
         }
     }
 
@@ -366,7 +412,7 @@ class RuleXcelApp {
      */
     async handleQuickMonthFilter() {
         if (this.parsedData.length === 0) {
-            this.showNotification('请先上传文件', 'warning');
+            console.log('请先上传文件');
             return;
         }
 
@@ -378,7 +424,7 @@ class RuleXcelApp {
             }
 
             const monthStr = `${selectedMonth.year}年${selectedMonth.month}月`;
-            this.showNotification(`正在处理${monthStr}数据...`, 'info');
+            console.log(`正在处理${monthStr}数据...`);
             
             // 执行增强版月份数据筛选（传入所有文件数据和选择的月份）
             const result = await this.quickActions.executeAction('filterCurrentMonth', this.parsedData, selectedMonth);
@@ -396,7 +442,7 @@ class RuleXcelApp {
             if (result.success && result.data.length > 0) {
                 this.processedData = result.data;
                 this.dataPreview.setProcessedData(result.data);
-                this.showNotification(result.message, 'success');
+                console.log(result.message);
                 logger.userAction('筛选月份数据', result.stats);
                 
                 // 步骤7: 询问用户是否导出Excel文件
@@ -408,18 +454,18 @@ class RuleXcelApp {
                         }
                     } catch (exportError) {
                         logger.error('导出失败', exportError);
-                        this.showNotification(`导出失败: ${exportError.message}`, 'error');
+                        console.error(`导出失败: ${exportError.message}`);
                     }
                 }, 500); // 短暂延迟以确保数据预览更新完成
                 
             } else if (result.success && result.data.length === 0) {
-                this.showNotification(`没有找到符合条件的${monthStr}数据`, 'warning');
+                console.log(`没有找到符合条件的${monthStr}数据`);
             } else {
-                this.showNotification(result.message, 'error');
+                console.error(result.message);
             }
         } catch (error) {
             logger.error('筛选月份数据失败', error);
-            this.showNotification(`操作失败: ${error.message}`, 'error');
+            console.error(`操作失败: ${error.message}`);
         }
     }
 
@@ -801,7 +847,7 @@ class RuleXcelApp {
             }
             
             if (result.success) {
-                this.showNotification(`${monthStr}优质资源位导出成功`, 'success');
+                console.log(`${monthStr}优质资源位导出成功`);
                 logger.userAction(`导出${monthStr}优质资源位`, {
                     fileName: fileName,
                     rows: exportData.length,
@@ -939,7 +985,7 @@ class RuleXcelApp {
             }
             
             if (result.success) {
-                this.showNotification(`${monthStr}资源位数据导出成功`, 'success');
+                console.log(`${monthStr}资源位数据导出成功`);
                 logger.userAction(`导出${monthStr}资源位数据`, {
                     fileName: fileName,
                     rows: exportData.length,
@@ -1017,11 +1063,11 @@ class RuleXcelApp {
                     } else {
                         logger.warn('文件系统访问API失败，回退到传统方法', error);
                         // 继续执行传统下载方法
-                        this._performTraditionalDownload(blob, fileName);
+                        // this._performTraditionalDownload(blob, fileName); // 删除或注释所有传统下载相关调用和实现
                     }
                 }
             } else {
-                this._performTraditionalDownload(blob, fileName);
+                // this._performTraditionalDownload(blob, fileName); // 删除或注释所有传统下载相关调用和实现
             }
             
             return { 
@@ -1037,28 +1083,11 @@ class RuleXcelApp {
     }
 
     /**
-     * 执行传统下载方法
-     * @param {Blob} blob - 文件Blob对象
-     * @param {string} fileName - 文件名
-     */
-    _performTraditionalDownload(blob, fileName) {
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    }
-
-    /**
      * 处理快捷操作 - 提取优质资源位
      */
     async handleQuickQualityExtract() {
         if (this.parsedData.length === 0) {
-            this.showNotification('请先上传文件', 'warning');
+            console.log('请先上传文件');
             return;
         }
 
@@ -1070,7 +1099,7 @@ class RuleXcelApp {
             }
 
             const monthStr = `${selectedMonth.year}年${selectedMonth.month}月`;
-            this.showNotification(`正在提取${monthStr}优质资源位...`, 'info');
+            console.log(`正在提取${monthStr}优质资源位...`);
             
             // 执行增强版优质资源位提取（传入所有文件数据和选择的月份）
             const result = await this.quickActions.executeAction('extractQualityResources', this.parsedData, selectedMonth);
@@ -1088,7 +1117,7 @@ class RuleXcelApp {
             if (result.success && result.data.length > 0) {
                 this.processedData = result.data;
                 this.dataPreview.setProcessedData(result.data);
-                this.showNotification(result.message, 'success');
+                console.log(result.message);
                 logger.userAction('提取优质资源位', result.stats);
                 
                 // 步骤7: 询问用户是否导出Excel文件
@@ -1100,19 +1129,251 @@ class RuleXcelApp {
                         }
                     } catch (exportError) {
                         logger.error('导出失败', exportError);
-                        this.showNotification(`导出失败: ${exportError.message}`, 'error');
+                        console.error(`导出失败: ${exportError.message}`);
                     }
                 }, 500); // 短暂延迟以确保数据预览更新完成
                 
             } else if (result.success && result.data.length === 0) {
-                this.showNotification(`没有找到符合条件的${monthStr}优质资源位`, 'warning');
+                console.log(`没有找到符合条件的${monthStr}优质资源位`);
             } else {
-                this.showNotification(result.message, 'error');
+                console.error(result.message);
             }
         } catch (error) {
             logger.error('提取优质资源位失败', error);
-            this.showNotification(`操作失败: ${error.message}`, 'error');
+            console.error(`操作失败: ${error.message}`);
         }
+    }
+
+    /**
+     * 处理筛选配置
+     */
+    handleFilterConfig() {
+        const columns = this.getAvailableColumns();
+        const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
+        this.ruleConfigModal.showFilterConfig(columns, hasPrevious);
+    }
+
+    /**
+     * 处理排序配置
+     */
+    handleSortConfig() {
+        const columns = this.getAvailableColumns();
+        const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
+        this.ruleConfigModal.showSortConfig(columns, hasPrevious);
+    }
+
+    /**
+     * 处理列处理配置
+     */
+    handleProcessConfig() {
+        const columns = this.getAvailableColumns();
+        const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
+        this.ruleConfigModal.showProcessConfig(columns, hasPrevious);
+    }
+
+    /**
+     * 处理合并配置
+     */
+    handleMergeConfig() {
+        const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
+        this.ruleConfigModal.showMergeConfig(this.parsedData || [], hasPrevious);
+    }
+
+    /**
+     * 获取可用列名（映射为A、B、C格式）
+     */
+    getAvailableColumns() {
+        if (!this.parsedData || this.parsedData.length === 0) {
+            return [];
+        }
+
+        // 获取第一个文件的第一行数据来确定列名
+        const firstFile = this.parsedData[0];
+        const firstData = Array.isArray(firstFile.data) ? firstFile.data : [firstFile.data];
+        
+        if (firstData.length === 0) {
+            return [];
+        }
+
+        const originalColumns = Object.keys(firstData[0]);
+        
+        // 更新columnMapper的数据
+        this.columnMapper.updateData(firstData);
+        
+        // 返回映射后的列名
+        return this.columnMapper.getAvailableColumns();
+    }
+
+    /**
+     * 处理规则配置回调
+     * @param {Object} config - 规则配置对象，结构统一为：
+     *   { type: 'filter'|'sort'|'process'|'merge', ...参数 }
+     *   filter:  { type: 'filter', col, op, value }
+     *   sort:    { type: 'sort', col, order }
+     *   process: { type: 'process', col, op, value }
+     *   merge:   { type: 'merge', mergeType, files }
+     *   dataSource: 'original'|'previous'  // 新增：数据来源
+     */
+    async handleRuleConfig(config) {
+        // 只对非合并规则做上传校验
+        if (config.type !== 'merge' && (!this.parsedData || this.parsedData.length === 0)) {
+            console.log('请先上传文件');
+            return;
+        }
+
+        try {
+            this.progressManager.start('正在应用规则...');
+            let currentData;
+            // 数据来源判断
+            let dataSource = config.dataSource || 'original';
+            if (dataSource === 'previous' && (!this.currentData || !Array.isArray(this.currentData) || this.currentData.length === 0)) {
+                alert('上一步结果不可用，请先应用前置规则或选择原始数据');
+                return;
+            }
+            // 合并规则：主流程统一使用主上传区数据
+            if (config.type === 'merge') {
+                const mergeType = config.mergeType;
+                if (!this.parsedData || this.parsedData.length === 0) {
+                    throw new Error('请先在主上传区上传文件');
+                }
+                let XLSX = window.XLSX;
+                if (!XLSX) {
+                    XLSX = await import('../libs/xlsx.min.js').then(m => m.default || m);
+                }
+                const parseFile = async (fileObj) => {
+                    if (fileObj.file) {
+                        const data = await fileObj.file.arrayBuffer();
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        return workbook;
+                    } else if (fileObj.data) {
+                        return { Sheets: { Sheet1: XLSX.utils.json_to_sheet(fileObj.data) }, SheetNames: ['Sheet1'] };
+                    }
+                    throw new Error('文件数据无效');
+                };
+                let mergedData = [];
+                if (mergeType === 'files') {
+                    for (let i = 0; i < this.parsedData.length; i++) {
+                        const wb = await parseFile(this.parsedData[i]);
+                        const firstSheet = wb.SheetNames[0];
+                        const sheet = wb.Sheets[firstSheet];
+                        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                        mergedData = mergedData.concat(json);
+                    }
+                } else if (mergeType === 'sheets') {
+                    const wb = await parseFile(this.parsedData[0]);
+                    wb.SheetNames.forEach(sheetName => {
+                        const sheet = wb.Sheets[sheetName];
+                        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                        mergedData = mergedData.concat(json);
+                    });
+                } else {
+                    throw new Error('不支持的合并类型: ' + mergeType);
+                }
+                currentData = mergedData;
+                this.currentData = mergedData; // 修正：合并后立即赋值，保证链式数据流
+                this.ruleProcessor.updateData(currentData);
+                console.log('[DEBUG] 合并后 currentData:', currentData);
+            } else {
+                // 其它规则，数据来源已判断
+                if (dataSource === 'previous') {
+                    currentData = this.currentData;
+                } else {
+                    currentData = this.getCurrentDataForProcessing();
+                }
+                this.ruleProcessor.updateData(currentData);
+            }
+            // 应用规则
+            let result = currentData;
+            // 新增：规则应用前校验数据有效性
+            console.log('[DEBUG] 规则应用前 currentData:', currentData);
+            if (!Array.isArray(currentData) || currentData.length === 0) {
+                this.progressManager.error('当前数据无效，无法应用规则。请检查数据来源或先完成上一步操作。');
+                return;
+            }
+            switch (config.type) {
+                case 'filter':
+                    this.progressManager.setStepDetail(3, '筛选数据中...');
+                    result = this.ruleProcessor.filter(config);
+                    break;
+                case 'sort':
+                    this.progressManager.setStepDetail(3, '排序数据中...');
+                    result = this.ruleProcessor.sort(config);
+                    break;
+                case 'process':
+                    this.progressManager.setStepDetail(3, '处理列数据中...');
+                    result = this.ruleProcessor.process(config);
+                    break;
+                case 'merge':
+                    this.progressManager.setStepDetail(3, '合并表格中...');
+                    result = this.ruleProcessor.merge({ ...config, files: [currentData] });
+                    this.parsedData = [{ data: result, fileName: '合并结果' }];
+                    break;
+                default:
+                    throw new Error(`未知的规则类型: ${config.type}`);
+            }
+            this.processedData = result;
+            this.progressManager.setStepDetail(4, '更新预览中...');
+            this.dataPreview.setProcessedData(result);
+            this.updateStats();
+            this.progressManager.complete(`规则应用完成，处理了 ${result.length} 行数据`);
+            console.log(`规则应用成功，生成 ${result.length} 行数据`);
+        } catch (error) {
+            console.error('规则应用失败:', error);
+            this.progressManager.error(`规则应用失败: ${error.message}`);
+            console.error(`规则应用失败: ${error.message}`);
+        }
+        this.currentData = this.processedData;
+        // 规则应用后，保存历史
+        if (Array.isArray(this.currentData)) {
+            this.dataHistory.push([...this.currentData]);
+        }
+        // 规则应用后，自动更新当前数据状态提示
+        this.setCurrentStatus(config.type, config.dataSource);
+        // 规则应用后，自动刷新预览区
+        this.dataPreview.setProcessedData(this.processedData);
+    }
+
+    /**
+     * 撤销上一步操作
+     */
+    undoLastOperation() {
+        if (this.dataHistory.length > 1) {
+            this.dataHistory.pop(); // 移除当前
+            this.currentData = [...this.dataHistory[this.dataHistory.length - 1]];
+            this.processedData = this.currentData;
+            this.dataPreview.setProcessedData(this.currentData);
+            this.setCurrentStatus('撤销', 'previous');
+        } else {
+            alert('没有可撤销的操作');
+        }
+    }
+    /**
+     * 一键重置为原始数据
+     */
+    resetToOriginalData() {
+        this.currentData = null;
+        this.dataHistory = [];
+        this.processedData = null;
+        this.dataPreview.setOriginalData(this.parsedData);
+        this.setCurrentStatus('original', 'original');
+    }
+
+    /**
+     * 获取当前用于处理的数据
+     */
+    getCurrentDataForProcessing() {
+        if (!this.parsedData || this.parsedData.length === 0) {
+            return [];
+        }
+
+        // 合并所有文件的数据
+        let allData = [];
+        this.parsedData.forEach(fileData => {
+            const dataArray = Array.isArray(fileData.data) ? fileData.data : [fileData.data];
+            allData = allData.concat(dataArray);
+        });
+
+        return allData;
     }
 
     /**
@@ -1120,12 +1381,12 @@ class RuleXcelApp {
      */
     async handleApplyRules() {
         if (this.parsedData.length === 0) {
-            this.showNotification('请先上传文件', 'warning');
+            console.log('请先上传文件');
             return;
         }
 
         if (this.isProcessing) {
-            this.showNotification('正在处理中，请稍候...', 'warning');
+            console.log('正在处理中，请稍候...');
             return;
         }
 
@@ -1178,12 +1439,12 @@ class RuleXcelApp {
             this.updateStats();
 
             this.progressManager.complete(`规则应用完成，处理了 ${this.processedData.length} 行数据`);
-            this.showNotification(`规则应用成功，生成 ${this.processedData.length} 行数据`, 'success');
+            console.log(`规则应用成功，生成 ${this.processedData.length} 行数据`);
 
         } catch (error) {
             console.error('规则应用失败:', error);
             this.progressManager.error(`规则应用失败: ${error.message}`);
-            this.showNotification(`规则应用失败: ${error.message}`, 'error');
+            console.error(`规则应用失败: ${error.message}`);
         } finally {
             this.isProcessing = false;
         }
@@ -1216,56 +1477,26 @@ class RuleXcelApp {
     }
 
     /**
-     * 显示通知
-     * @param {string} message - 消息内容
-     * @param {string} type - 消息类型
-     */
-    showNotification(message, type) {
-        // 创建通知元素
-        const notification = document.createElement('div');
-        notification.className = `alert alert-${type} fixed top-4 right-4 w-auto max-w-md z-50 shadow-lg`;
-        notification.innerHTML = `
-            <div class="flex items-center gap-2">
-                <span>${message}</span>
-                <button class="btn btn-xs btn-ghost" onclick="this.parentElement.parentElement.remove()">×</button>
-            </div>
-        `;
-
-        document.body.appendChild(notification);
-
-        // 自动移除通知
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.remove();
-            }
-        }, 5000);
-    }
-
-    /**
      * 处理Excel导出
      */
     async handleExportExcel() {
-        const data = this.getCurrentDataForExport();
-        if (data.length === 0) {
-            this.showNotification('没有数据可导出', 'warning');
+        const exportData = this.processedData || [];
+        if (exportData.length === 0) {
+            console.log('没有数据可导出');
             return;
         }
-
         try {
-            const result = await this.exporter.exportToExcel(data, {
+            const result = await this.exporter.exportToExcel(exportData, {
                 filename: `processed_data_${new Date().toISOString().slice(0, 10)}.xlsx`,
                 sheetName: '处理结果'
             });
-
-            if (result.success) {
-                this.showNotification('Excel文件导出成功', 'success');
-                logger.userAction('导出Excel', { rows: data.length });
-            } else {
-                this.showNotification(result.message, 'error');
+            if (result && result.success) {
+                console.log('Excel文件导出成功');
+                logger.userAction('导出Excel', { rows: exportData.length });
             }
+            // 用户取消(result.cancelled)或失败时不输出任何成功信息
         } catch (error) {
-            logger.error('Excel导出失败', error);
-            this.showNotification(`导出失败: ${error.message}`, 'error');
+            console.error(`导出失败: ${error.message}`);
         }
     }
 
@@ -1273,27 +1504,23 @@ class RuleXcelApp {
      * 处理CSV导出
      */
     async handleExportCSV() {
-        const data = this.getCurrentDataForExport();
-        if (data.length === 0) {
-            this.showNotification('没有数据可导出', 'warning');
+        const exportData = this.processedData || [];
+        if (exportData.length === 0) {
+            console.log('没有数据可导出');
             return;
         }
-
         try {
-            const result = await this.exporter.exportToCSV(data, {
+            const result = await this.exporter.exportToCSV(exportData, {
                 filename: `processed_data_${new Date().toISOString().slice(0, 10)}.csv`,
                 encoding: 'utf-8'
             });
-
-            if (result.success) {
-                this.showNotification('CSV文件导出成功', 'success');
-                logger.userAction('导出CSV', { rows: data.length });
-            } else {
-                this.showNotification(result.message, 'error');
+            if (result && result.success) {
+                console.log('CSV文件导出成功');
+                logger.userAction('导出CSV', { rows: exportData.length });
             }
+            // 用户取消(result.cancelled)或失败时不输出任何成功信息
         } catch (error) {
-            logger.error('CSV导出失败', error);
-            this.showNotification(`导出失败: ${error.message}`, 'error');
+            console.error(`导出失败: ${error.message}`);
         }
     }
 
@@ -1305,12 +1532,12 @@ class RuleXcelApp {
         const processedData = this.processedData;
 
         if (!originalData || originalData.length === 0) {
-            this.showNotification('没有原始数据可对比', 'warning');
+            console.log('没有原始数据可对比');
             return;
         }
 
         if (!processedData || processedData.length === 0) {
-            this.showNotification('没有处理后数据可对比', 'warning');
+            console.log('没有处理后数据可对比');
             return;
         }
 
@@ -1327,17 +1554,30 @@ class RuleXcelApp {
             });
 
             if (result.success) {
-                this.showNotification('对比数据导出成功', 'success');
+                console.log('对比数据导出成功');
                 logger.userAction('导出对比数据', { 
                     originalRows: mergedOriginal.length,
                     processedRows: processedData.length 
                 });
             } else {
-                this.showNotification(result.message, 'error');
+                if (
+                    typeof result.message === 'string' &&
+                    result.message.includes('user activation is required')
+                ) {
+                    return;
+                }
+                console.error(result.message);
             }
         } catch (error) {
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('对比数据导出失败', error);
-            this.showNotification(`导出失败: ${error.message}`, 'error');
+            console.error(`导出失败: ${error.message}`);
         }
     }
 
@@ -1346,7 +1586,46 @@ class RuleXcelApp {
      * @returns {Array} 当前数据
      */
     getCurrentDataForExport() {
-        return this.processedData || this.dataPreview.getCurrentData() || [];
+        // 只返回处理后的数据，且自动解包data字段
+        if (Array.isArray(this.processedData) && this.processedData.length === 1 && this.processedData[0].data) {
+            return this.processedData[0].data;
+        }
+        return this.processedData || [];
+    }
+
+    /**
+     * 上传/解析文件后，重置 currentData 并刷新状态提示
+     */
+    resetCurrentData() {
+        this.currentData = null;
+        this.setCurrentStatus('original', 'original');
+    }
+
+    /**
+     * 设置当前数据状态提示
+     * @param {string} status - 当前处理规则类型
+     * @param {string} source - 当前数据来源
+     */
+    setCurrentStatus(status, source) {
+        const statusEl = document.getElementById('current-data-status');
+        if (statusEl) {
+            let ruleText = '';
+            switch (status) {
+                case 'filter': ruleText = '筛选数据'; break;
+                case 'sort': ruleText = '排序数据'; break;
+                case 'process': ruleText = '处理列'; break;
+                case 'merge': ruleText = '合并表格'; break;
+                default: ruleText = '原始数据';
+            }
+            let sourceText = '';
+            switch (source) {
+                case 'original': sourceText = '原始数据'; break;
+                case 'previous': sourceText = '上一步结果'; break;
+                case 'merge': sourceText = '合并结果'; break;
+                default: sourceText = source || '原始数据';
+            }
+            statusEl.innerHTML = `<span class="font-bold">当前数据：</span>${ruleText}（来源：${sourceText}）`;
+        }
     }
 
     /**

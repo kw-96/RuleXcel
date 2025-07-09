@@ -494,7 +494,7 @@ class DataPreview {
      */
     async exportExcel() {
         if (!this.currentData || this.currentData.length === 0) {
-            this.showNotification('没有数据可导出', 'warning');
+            alert('没有数据可导出');
             return;
         }
         
@@ -516,14 +516,26 @@ class DataPreview {
             });
             
             if (result.success) {
-                this.showNotification('Excel文件导出成功', 'success');
+                alert('Excel文件导出成功');
             } else {
+                if (
+                    typeof result.message === 'string' &&
+                    result.message.includes('user activation is required')
+                ) {
+                    return;
+                }
                 throw new Error(result.message || '导出失败');
             }
             
         } catch (error) {
-            console.error('Excel导出失败:', error);
-            this.showNotification(`Excel导出失败: ${error.message}`, 'error');
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
+            alert(`Excel导出失败: ${error.message}`);
         }
     }
 
@@ -532,7 +544,7 @@ class DataPreview {
      */
     exportCSV() {
         if (!this.currentData || this.currentData.length === 0) {
-            this.showNotification('没有数据可导出', 'warning');
+            alert('没有数据可导出');
             return;
         }
         
@@ -549,17 +561,22 @@ class DataPreview {
             const url = URL.createObjectURL(blob);
             
             link.setAttribute('href', url);
-            link.setAttribute('download', this.generateFileName('csv'));
-            link.style.visibility = 'hidden';
+            // 删除或注释所有 link.setAttribute('download', ...) 及相关自动下载逻辑
             
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
             
-            this.showNotification('CSV文件导出成功', 'success');
+            alert('CSV文件导出成功');
         } catch (error) {
-            console.error('CSV导出失败:', error);
-            this.showNotification('CSV导出失败', 'error');
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
+            alert('CSV导出失败');
         }
     }
 
@@ -574,27 +591,6 @@ class DataPreview {
         const extension = type === 'excel' ? 'xlsx' : 'csv';
         
         return `${prefix}_${timestamp}.${extension}`;
-    }
-
-    /**
-     * 显示通知
-     * @param {string} message - 消息内容
-     * @param {string} type - 消息类型
-     */
-    showNotification(message, type) {
-        const notification = document.createElement('div');
-        notification.className = `alert alert-${type} fixed top-4 right-4 w-auto z-50`;
-        notification.innerHTML = `
-            <div>
-                <span>${message}</span>
-            </div>
-        `;
-        
-        document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            notification.remove();
-        }, 3000);
     }
 
     /**

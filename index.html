@@ -11,6 +11,7 @@
     
     <!-- 自定义样式 -->
     <link rel="stylesheet" href="src/css/main.css">
+    <link rel="stylesheet" href="src/css/components/ruleConfig.css">
     
     <!-- 第三方库 -->
     <script src="libs/xlsx.min.js"></script>
@@ -149,131 +150,42 @@
                     <span class="text-2xl">⚙️</span>
                     <h2 class="text-2xl font-bold text-gray-800">数据处理规则</h2>
                 </div>
-                <p class="text-sm text-gray-600 text-center mb-6">可视化配置数据处理流程，无需编程技能</p>
-                <div class="grid grid-cols-3 gap-4">
-                    <button class="btn btn-outline">添加筛选条件</button>
-                    <button class="btn btn-outline">设置排序规则</button>
-                    <button class="btn btn-outline">配置合并方式</button>
+                <p class="text-sm text-gray-600 text-center mb-6">可视化配置数据处理流程，无需编程技能<br>（可单个环节处理原始数据或组合处理数据）</p>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <button id="mergeBtn" class="btn btn-outline btn-lg">
+                        <span class="text-2xl">🔗</span>
+                        <div class="text-left">
+                            <div class="font-bold">合并表格</div>
+                            <div class="text-xs opacity-70">多表合并</div>
+                        </div>
+                    </button>
+                    <button id="filterBtn" class="btn btn-outline btn-lg">
+                        <span class="text-2xl">🔍</span>
+                        <div class="text-left">
+                            <div class="font-bold">筛选数据</div>
+                            <div class="text-xs opacity-70">按条件筛选</div>
+                        </div>
+                    </button>
+                    <button id="processBtn" class="btn btn-outline btn-lg">
+                        <span class="text-2xl">📝</span>
+                        <div class="text-left">
+                            <div class="font-bold">处理列</div>
+                            <div class="text-xs opacity-70">简单计算</div>
+                        </div>
+                    </button>
+                    <button id="sortBtn" class="btn btn-outline btn-lg">
+                        <span class="text-2xl">📊</span>
+                        <div class="text-left">
+                            <div class="font-bold">排序数据</div>
+                            <div class="text-xs opacity-70">重新排列</div>
+                        </div>
+                    </button>
                 </div>
+                <!-- 配置表单动态插入区（修正位置，放在.card-body内） -->
+                <div id="ruleConfigPanel" class="mt-4"></div>
             </div>
         </div>
 
-        <!-- 高级规则编辑区域（隐藏的详细配置） -->
-        <div class="card bg-base-200 shadow-xl mb-8 hidden" id="advanced-rules">
-            <div class="card-header p-6 pb-0">
-                <div class="flex items-center gap-3 mb-2">
-                    <div class="avatar">
-                        <div class="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
-                            <span class="text-xl">⚙️</span>
-                        </div>
-                    </div>
-                    <div>
-                        <h2 class="card-title text-2xl">数据处理规则</h2>
-                        <p class="text-base-content/70">可视化配置，无需编程技能</p>
-                    </div>
-                </div>
-            </div>
-            <div class="card-body">
-                <div class="tabs tabs-bordered">
-                    <a class="tab tab-active" data-tab="filter">筛选数据</a>
-                    <a class="tab" data-tab="sort">排序数据</a>
-                    <a class="tab" data-tab="merge">合并数据</a>
-                </div>
-                
-                <!-- 筛选规则 -->
-                <div id="filter-rules" class="tab-content">
-                    <div class="mb-4">
-                        <h3 class="text-lg font-medium mb-2">筛选条件</h3>
-                        <p class="text-sm text-base-content/70 mb-4">设置条件来筛选需要的数据行</p>
-                        
-                        <div id="filter-conditions" class="space-y-3">
-                            <!-- 筛选条件将通过JavaScript动态添加 -->
-                        </div>
-                        
-                        <button id="add-filter-condition" class="btn btn-sm btn-outline mt-3">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                            </svg>
-                            添加筛选条件
-                        </button>
-                        
-                        <div class="mt-4 p-3 bg-base-100 rounded-lg">
-                            <h4 class="text-sm font-medium mb-2">生成的筛选规则：</h4>
-                            <code id="filter-preview" class="text-xs text-base-content/70">暂无筛选条件</code>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 排序规则 -->
-                <div id="sort-rules" class="tab-content hidden">
-                    <div class="mb-4">
-                        <h3 class="text-lg font-medium mb-2">排序设置</h3>
-                        <p class="text-sm text-base-content/70 mb-4">按照指定列对数据进行排序</p>
-                        
-                        <div id="sort-conditions" class="space-y-3">
-                            <!-- 排序条件将通过JavaScript动态添加 -->
-                        </div>
-                        
-                        <button id="add-sort-condition" class="btn btn-sm btn-outline mt-3">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                            </svg>
-                            添加排序列
-                        </button>
-                        
-                        <div class="mt-4 p-3 bg-base-100 rounded-lg">
-                            <h4 class="text-sm font-medium mb-2">生成的排序规则：</h4>
-                            <code id="sort-preview" class="text-xs text-base-content/70">暂无排序设置</code>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 合并规则 -->
-                <div id="merge-rules" class="tab-content hidden">
-                    <div class="mb-4">
-                        <h3 class="text-lg font-medium mb-2">合并设置</h3>
-                        <p class="text-sm text-base-content/70 mb-4">选择数据合并方式</p>
-                        
-                        <div class="form-control">
-                            <label class="label">
-                                <span class="label-text">合并类型</span>
-                            </label>
-                            <select id="merge-type" class="select select-bordered w-full" title="选择数据合并类型">
-                                <option value="">请选择合并类型</option>
-                                <option value="files">多个文件合并为一个表格</option>
-                                <option value="sheets">单文件多Sheet合并</option>
-                                <option value="columns">按列合并数据</option>
-                            </select>
-                        </div>
-                        
-                        <div id="merge-options" class="mt-4 hidden">
-                            <!-- 根据选择的合并类型显示不同选项 -->
-                        </div>
-                        
-                        <div class="mt-4 p-3 bg-base-100 rounded-lg">
-                            <h4 class="text-sm font-medium mb-2">合并说明：</h4>
-                            <p id="merge-description" class="text-xs text-base-content/70">请先选择合并类型</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="card-actions justify-between mt-6">
-                    <div class="flex gap-2">
-                        <button id="save-rules-template" class="btn btn-sm btn-outline">保存为模板</button>
-                        <button id="load-rules-template" class="btn btn-sm btn-outline">加载模板</button>
-                    </div>
-                    <div class="flex gap-2">
-                        <button id="clear-rules" class="btn btn-outline">清空规则</button>
-                        <button id="apply-rules" class="btn btn-primary">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            应用规则
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
 
         <!-- 数据预览区域 -->
         <div class="card bg-white shadow-xl mb-4">

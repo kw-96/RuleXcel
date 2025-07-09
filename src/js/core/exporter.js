@@ -44,7 +44,7 @@ class Exporter {
             });
 
             // 使用智能数据预处理，只对确定的日期列进行保护
-            const processedData = this._intelligentPreprocessDataForExport(data);
+            const processedData = this._preprocessDataForExport(data);
             logger.info('智能数据预处理完成', { originalRows: data.length, finalRows: processedData.length });
 
             // 创建工作簿
@@ -59,6 +59,17 @@ class Exporter {
             });
             
             const ws = this.XLSX.utils.json_to_sheet(processedData);
+            // 自动设置列宽
+            if (processedData.length > 0) {
+                const keys = Object.keys(processedData[0]);
+                ws['!cols'] = keys.map(key => {
+                    const maxLen = Math.max(
+                        key.length,
+                        ...processedData.map(row => (row[key] ? String(row[key]).length : 0))
+                    );
+                    return { wch: Math.max(8, Math.min(maxLen + 2, 40)) };
+                });
+            }
             
             // 详细检查工作表内容
             const allKeys = Object.keys(ws);
@@ -79,7 +90,7 @@ class Exporter {
             });
 
             // 智能设置工作表格式，只对日期列进行特殊处理
-            this._intelligentSetWorksheetFormat(ws, processedData);
+            this._setWorksheetTextFormat(ws, processedData);
 
             // 添加工作表到工作簿
             this.XLSX.utils.book_append_sheet(wb, ws, config.sheetName);
@@ -94,6 +105,15 @@ class Exporter {
             return { success: true, filename };
 
         } catch (error) {
+            // 静默处理showSaveFilePicker的user activation错误，不抛出异常
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('showSaveFilePicker') &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('Excel导出失败', error);
             throw new Error(`Excel导出失败: ${error.message}`);
         }
@@ -131,8 +151,10 @@ class Exporter {
             return { success: true, filename };
 
         } catch (error) {
-            logger.error('CSV导出失败', error);
-            throw new Error(`CSV导出失败: ${error.message}`);
+            if (error && (error.name === 'AbortError' || (typeof error.message === 'string' && error.message.includes('user activation is required')))) {
+                return { success: false, cancelled: true };
+            }
+            return { success: false, error: error.message };
         }
     }
 
@@ -200,6 +222,15 @@ class Exporter {
             return { success: true, filename };
 
         } catch (error) {
+            // 静默处理showSaveFilePicker的user activation错误，不抛出异常
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('showSaveFilePicker') &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('多工作表导出失败', error);
             throw new Error(`多工作表导出失败: ${error.message}`);
         }
@@ -231,6 +262,15 @@ class Exporter {
             
             return await this.exportMultipleSheets(datasets, { ...options, filename });
         } catch (error) {
+            // 静默处理showSaveFilePicker的user activation错误，不抛出异常
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('showSaveFilePicker') &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('对比数据导出失败', error);
             throw new Error(`对比数据导出失败: ${error.message}`);
         }
@@ -298,29 +338,6 @@ class Exporter {
     }
 
     /**
-     * 下载文件
-     * @param {string} content - 文件内容
-     * @param {string} filename - 文件名
-     * @param {string} mimeType - MIME类型
-     */
-    _downloadFile(content, filename, mimeType) {
-        const blob = new Blob([content], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        link.style.display = 'none';
-        
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        // 清理URL对象
-        setTimeout(() => URL.revokeObjectURL(url), 100);
-    }
-
-    /**
      * 下载Excel文件 - 改进版本
      * @param {Object} workbook - XLSX工作簿对象
      * @param {string} filename - 文件名
@@ -328,16 +345,10 @@ class Exporter {
      */
     async _downloadExcelFile(workbook, filename) {
         try {
-            // 检查浏览器支持
-            const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
-            const isFirefox = /Firefox/.test(navigator.userAgent);
-            const isEdge = /Edge/.test(navigator.userAgent);
-            
-            // 优先使用现代文件系统访问API（让用户选择保存路径）
+            // 只保留文件系统API导出
             if (window.showSaveFilePicker) {
                 try {
                     logger.info('使用文件系统访问API，用户可选择保存路径');
-                    
                     const fileHandle = await window.showSaveFilePicker({
                         suggestedName: filename,
                         types: [{
@@ -348,8 +359,6 @@ class Exporter {
                         }],
                         excludeAcceptAllOption: false
                     });
-                    
-                    // 生成二进制数据并检查
                     const buffer = this.XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
                     logger.info('工作簿写入检查', {
                         bufferSize: buffer.byteLength,
@@ -357,75 +366,40 @@ class Exporter {
                         isEmpty: buffer.byteLength === 0,
                         firstBytes: Array.from(buffer.slice(0, 10))
                     });
-                    
                     const writable = await fileHandle.createWritable();
                     await writable.write(buffer);
                     await writable.close();
-                    
-                    // 获取保存的文件路径信息
                     const savedFileName = fileHandle.name;
                     logger.info('文件保存成功', { filename: savedFileName, method: 'FileSystemAPI' });
                     return;
-                    
                 } catch (error) {
                     if (error.name === 'AbortError') {
                         logger.info('用户取消了文件保存操作');
-                        throw new Error('用户取消了保存操作');
+                        // 用户主动取消时不弹出任何错误通知
+                        return;
                     } else {
-                        logger.warn('文件系统访问API失败，回退到传统方法', error);
-                        // 继续执行传统下载方法
+                        if (
+                            error &&
+                            typeof error.message === 'string' &&
+                            error.message.includes('user activation is required')
+                        ) {
+                            return;
+                        }
+                        logger.error('文件系统访问API失败', error);
+                        throw error;
                     }
                 }
             } else {
-                logger.info('浏览器不支持文件系统访问API，使用传统下载方法');
+                throw new Error('当前浏览器不支持文件系统访问API，无法保存文件');
             }
-            
-            // 传统下载方法（回退方案）
-            logger.info('使用传统下载方法', { filename });
-            
-            // 生成二进制数据
-            const buffer = this.XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-            const blob = new Blob([buffer], { 
-                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-            });
-            
-            // 创建下载链接
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = filename;
-            link.style.display = 'none';
-            
-            // 添加到DOM并触发下载
-            document.body.appendChild(link);
-            
-            // 确保文件名正确设置
-            link.setAttribute('download', filename);
-            
-            // 触发点击事件
-            if (link.click) {
-                link.click();
-            } else {
-                // 兼容旧版浏览器
-                const event = new MouseEvent('click', {
-                    view: window,
-                    bubbles: true,
-                    cancelable: true
-                });
-                link.dispatchEvent(event);
-            }
-            
-            // 清理
-            document.body.removeChild(link);
-            
-            // 延迟清理URL以确保下载完成
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-            }, 1000);
-            
-            logger.info('Excel文件下载启动', { filename, method: 'traditional' });
-            
         } catch (error) {
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('Excel文件下载失败', error);
             throw error;
         }
@@ -439,11 +413,9 @@ class Exporter {
      */
     async _downloadCSVFile(content, filename) {
         try {
-            // 优先使用现代文件系统访问API（让用户选择保存路径）
             if (window.showSaveFilePicker) {
                 try {
                     logger.info('使用文件系统访问API保存CSV文件，用户可选择保存路径');
-                    
                     const fileHandle = await window.showSaveFilePicker({
                         suggestedName: filename,
                         types: [{
@@ -454,35 +426,41 @@ class Exporter {
                         }],
                         excludeAcceptAllOption: false
                     });
-                    
                     const writable = await fileHandle.createWritable();
-                    // 添加BOM以确保中文正确显示
                     const bomContent = '\ufeff' + content;
                     await writable.write(bomContent);
                     await writable.close();
-                    
-                    // 获取保存的文件路径信息
                     const savedFileName = fileHandle.name;
                     logger.info('CSV文件保存成功', { filename: savedFileName, method: 'FileSystemAPI' });
                     return;
-                    
                 } catch (error) {
                     if (error.name === 'AbortError') {
                         logger.info('用户取消了CSV文件保存操作');
-                        throw new Error('用户取消了保存操作');
+                        // 用户主动取消时不弹出任何错误通知
+                        return;
                     } else {
-                        logger.warn('文件系统访问API失败，回退到传统方法', error);
-                        // 继续执行传统下载方法
+                        if (
+                            error &&
+                            typeof error.message === 'string' &&
+                            error.message.includes('user activation is required')
+                        ) {
+                            return;
+                        }
+                        logger.error('文件系统访问API失败', error);
+                        throw error;
                     }
                 }
             } else {
-                logger.info('浏览器不支持文件系统访问API，使用传统CSV下载方法');
+                throw new Error('当前浏览器不支持文件系统访问API，无法保存文件');
             }
-            
-            // 传统下载方法（回退方案）
-            this._downloadFile(content, filename, 'text/csv;charset=utf-8;');
-            
         } catch (error) {
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('CSV文件下载失败', error);
             throw error;
         }
@@ -532,6 +510,15 @@ class Exporter {
                 sheetName: '系统日志' 
             });
         } catch (error) {
+            // 静默处理showSaveFilePicker的user activation错误，不抛出异常
+            if (
+                error &&
+                typeof error.message === 'string' &&
+                error.message.includes('showSaveFilePicker') &&
+                error.message.includes('user activation is required')
+            ) {
+                return;
+            }
             logger.error('日志导出失败', error);
             throw new Error(`日志导出失败: ${error.message}`);
         }
@@ -559,215 +546,44 @@ class Exporter {
     }
 
     /**
-     * 智能预处理数据，只对确定的日期列进行保护
-     * @param {Array} data - 数据数组
-     * @returns {Array} 预处理后的数据数组
-     */
-    _intelligentPreprocessDataForExport(data) {
-        if (!data || data.length === 0) return data;
-        
-        const headers = Object.keys(data[0]);
-        const dateColumns = this._identifyDateColumns(headers);
-        
-        return data.map(row => {
-            const processedRow = {};
-            for (const key in row) {
-                // 只对确定的日期列进行日期保护处理
-                if (dateColumns.includes(key)) {
-                    processedRow[key] = this._preprocessDateValueForExport(row[key]);
-                } else {
-                    // 其他列保持原始格式
-                    processedRow[key] = row[key];
-                }
-            }
-            return processedRow;
-        });
-    }
-
-    /**
-     * 预处理数据，防止自动日期转换（旧版本，保留兼容性）
+     * 统一预处理数据（不做内容变更，仅保留接口，便于后续扩展）
      * @param {Array} data - 数据数组
      * @returns {Array} 预处理后的数据数组
      */
     _preprocessDataForExport(data) {
-        return data.map(row => {
-            const processedRow = {};
-            for (const key in row) {
-                processedRow[key] = this._preprocessValueForExport(row[key]);
-            }
-            return processedRow;
-        });
+        if (!data || data.length === 0) return data;
+        return data.map(row => ({ ...row }));
     }
 
     /**
-     * 识别日期列
+     * 识别日期/需文本保护的列
      * @param {Array} headers - 列名数组
-     * @returns {Array} 日期列名数组
+     * @returns {Array} 需文本保护的列名数组
      */
-    _identifyDateColumns(headers) {
-        const dateKeywords = [
+    _identifyTextProtectColumns(headers) {
+        const keywords = [
             '日期', '时间', '投放日期', '报告日期', '统计日期', '创建时间', '更新时间',
             'date', 'time', 'created', 'updated', 'report', 'stat'
         ];
-        
         return headers.filter(header => {
             const lowerHeader = header.toLowerCase();
-            return dateKeywords.some(keyword => lowerHeader.includes(keyword));
+            return keywords.some(keyword => lowerHeader.includes(keyword));
         });
     }
 
     /**
-     * 预处理日期值，防止自动日期转换
-     * @param {any} value - 日期值
-     * @returns {any} 预处理后的值
-     */
-    _preprocessDateValueForExport(value) {
-        if (value === null || value === undefined || value === '') {
-            return value;
-        }
-
-        const stringValue = String(value);
-        
-        // 对于日期列，如果确实是日期格式，进行保护
-        if (this._isActualDateFormat(stringValue)) {
-            return `'${stringValue}`; // 单引号前缀，Excel传统的文本强制标记
-        }
-        
-        return value;
-    }
-
-    /**
-     * 检查是否为真正的日期格式（更严格的检查）
-     * @param {string} value - 字符串值
-     * @returns {boolean} 是否为真正的日期格式
-     */
-    _isActualDateFormat(value) {
-        if (typeof value !== 'string') {
-            return false;
-        }
-        
-        // 只对标准日期格式进行保护，避免误伤分数和百分比
-        const strictDatePatterns = [
-            /^\d{4}-\d{1,2}-\d{1,2}$/,     // YYYY-MM-DD 格式
-            /^\d{1,2}\/\d{1,2}\/\d{4}$/,   // MM/DD/YYYY 格式（完整年份）
-            /^\d{4}\/\d{1,2}\/\d{1,2}$/,   // YYYY/MM/DD 格式
-            /^\d{1,2}-\d{1,2}-\d{4}$/      // MM-DD-YYYY 格式（完整年份）
-        ];
-
-        return strictDatePatterns.some(pattern => pattern.test(value));
-    }
-
-    /**
-     * 智能设置工作表格式
-     * @param {Object} worksheet - XLSX工作表对象
-     * @param {Array} data - 数据数组
-     */
-    _intelligentSetWorksheetFormat(worksheet, data) {
-        if (!data || data.length === 0) return;
-        
-        const headers = Object.keys(data[0]);
-        const dateColumns = this._identifyDateColumns(headers);
-        
-        // 只对日期列设置文本格式保护
-        if (!worksheet['!cols']) worksheet['!cols'] = [];
-        
-        headers.forEach((header, index) => {
-            if (!worksheet['!cols'][index]) worksheet['!cols'][index] = {};
-            
-            if (dateColumns.includes(header)) {
-                // 日期列：设置为文本格式以保护日期格式
-                worksheet['!cols'][index].z = '@';
-            } else {
-                // 其他列：保持默认格式，让Excel自动识别
-                // 不设置特殊格式，保持数据原始性
-            }
-        });
-    }
-
-    /**
-     * 预处理单个值，防止自动日期转换
-     * @param {any} value - 值
-     * @returns {any} 预处理后的值
-     */
-    _preprocessValueForExport(value) {
-        if (value === null || value === undefined || value === '') {
-            return value;
-        }
-
-        const stringValue = String(value);
-        
-        // 检查是否可能被误认为日期的格式
-        if (this._mightBeInterpretedAsDate(stringValue)) {
-            // 使用多重保护机制：
-            // 1. 添加制表符前缀，强制Excel识别为文本
-            // 2. 或者添加单引号前缀（Excel的传统文本标记）
-            return `'${stringValue}`; // 单引号前缀，Excel传统的文本强制标记
-        }
-        
-        return value;
-    }
-
-    /**
-     * 检查值是否可能被Excel误认为日期
-     * @param {string} value - 字符串值
-     * @returns {boolean} 是否可能被误认为日期
-     */
-    _mightBeInterpretedAsDate(value) {
-        if (typeof value !== 'string') {
-            return false;
-        }
-        
-        // 常见的可能被误认为日期的格式
-        const datePatterns = [
-            /^\d{4}-\d{1,2}-\d{1,2}$/,     // YYYY-MM-DD 或 YYYY-M-D
-            /^\d{1,2}\/\d{1,2}\/\d{4}$/,   // MM/DD/YYYY 或 M/D/YYYY
-            /^\d{1,2}-\d{1,2}-\d{4}$/,     // MM-DD-YYYY 或 M-D-YYYY
-            /^\d{1,2}\.\d{1,2}\.\d{4}$/,   // MM.DD.YYYY 或 M.D.YYYY
-            /^\d{1,2}\/\d{1,2}$/,          // MM/DD 或 M/D
-            /^\d{1,2}-\d{1,2}$/,           // MM-DD 或 M-D
-            /^\d{4}\/\d{1,2}\/\d{1,2}$/,   // YYYY/MM/DD 或 YYYY/M/D
-            /^\d{1,2}:\d{1,2}$/,           // HH:MM 时间格式
-            /^\d{1,2}:\d{1,2}:\d{1,2}$/    // HH:MM:SS 时间格式
-        ];
-
-        return datePatterns.some(pattern => pattern.test(value));
-    }
-
-    /**
-     * 为工作表设置列格式为文本（防止Excel自动转换）
+     * 设置工作表所有列为文本格式保护
      * @param {Object} worksheet - XLSX工作表对象
      * @param {Array} data - 数据数组
      */
     _setWorksheetTextFormat(worksheet, data) {
         if (!data || data.length === 0) return;
-        
-        const range = this.XLSX.utils.decode_range(worksheet['!ref']);
-        
-        // 遍历每个单元格，强制设置为文本格式
-        for (let row = range.s.r; row <= range.e.r; row++) {
-            for (let col = range.s.c; col <= range.e.c; col++) {
-                const cellAddress = this.XLSX.utils.encode_cell({ r: row, c: col });
-                const cell = worksheet[cellAddress];
-                
-                if (cell && cell.v !== undefined) {
-                    const stringValue = String(cell.v);
-                    
-                    // 对所有可能被误认为日期的值进行强化保护
-                    if (this._mightBeInterpretedAsDate(stringValue) || 
-                        // 额外检查：任何包含连字符或斜杠的数字组合
-                        /\d.*[-\/]\d/.test(stringValue)) {
-                        
-                        cell.t = 's'; // 强制设置为字符串类型
-                        cell.z = '@'; // 强制设置数字格式为文本
-                        
-                        // 如果值没有单引号前缀，添加它
-                        if (!stringValue.startsWith("'")) {
-                            cell.v = `'${stringValue}`;
-                        }
-                    }
-                }
-            }
-        }
+        const headers = Object.keys(data[0]);
+        if (!worksheet['!cols']) worksheet['!cols'] = [];
+        headers.forEach((header, index) => {
+            if (!worksheet['!cols'][index]) worksheet['!cols'][index] = {};
+            worksheet['!cols'][index].z = '@'; // 所有列都文本保护
+        });
     }
 }
 
