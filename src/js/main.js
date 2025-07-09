@@ -25,6 +25,22 @@ import RuleProcessor from './core/ruleProcessor.js';
 
 console.log('✅ main.js 模块导入语句执行完毕');
 
+// Web Worker引用
+let ruleWorker = null;
+let columnWorker = null;
+function getRuleWorker() {
+  if (!ruleWorker) {
+    ruleWorker = new Worker('./core/ruleWorker.js', { type: 'module' });
+  }
+  return ruleWorker;
+}
+function getColumnWorker() {
+  if (!columnWorker) {
+    columnWorker = new Worker('./core/columnWorker.js', { type: 'module' });
+  }
+  return columnWorker;
+}
+
 /**
  * 应用主类
  */
@@ -73,6 +89,7 @@ class RuleXcelApp {
         
         // 初始化日志记录
         logger.info('RuleXcel应用组件初始化完成');
+        this.ruleWorker = getRuleWorker();
     }
 
     /**
@@ -1147,8 +1164,8 @@ class RuleXcelApp {
     /**
      * 处理筛选配置
      */
-    handleFilterConfig() {
-        const columns = this.getAvailableColumns();
+    async handleFilterConfig() {
+        const columns = await this.getAvailableColumnsAsync();
         const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
         this.ruleConfigModal.showFilterConfig(columns, hasPrevious);
     }
@@ -1156,8 +1173,8 @@ class RuleXcelApp {
     /**
      * 处理排序配置
      */
-    handleSortConfig() {
-        const columns = this.getAvailableColumns();
+    async handleSortConfig() {
+        const columns = await this.getAvailableColumnsAsync();
         const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
         this.ruleConfigModal.showSortConfig(columns, hasPrevious);
     }
@@ -1165,8 +1182,8 @@ class RuleXcelApp {
     /**
      * 处理列处理配置
      */
-    handleProcessConfig() {
-        const columns = this.getAvailableColumns();
+    async handleProcessConfig() {
+        const columns = await this.getAvailableColumnsAsync();
         const hasPrevious = Array.isArray(this.currentData) && this.currentData.length > 0;
         this.ruleConfigModal.showProcessConfig(columns, hasPrevious);
     }
@@ -1182,12 +1199,12 @@ class RuleXcelApp {
     /**
      * 获取可用列名（映射为A、B、C格式）
      */
-    getAvailableColumns() {
+    async getAvailableColumnsAsync() {
         if (!this.parsedData || this.parsedData.length === 0) {
             return [];
         }
 
-        // 获取第一个文件的第一行数据来确定列名
+        // 获取第一个文件的全部数据
         const firstFile = this.parsedData[0];
         const firstData = Array.isArray(firstFile.data) ? firstFile.data : [firstFile.data];
         
@@ -1205,14 +1222,7 @@ class RuleXcelApp {
     }
 
     /**
-     * 处理规则配置回调
-     * @param {Object} config - 规则配置对象，结构统一为：
-     *   { type: 'filter'|'sort'|'process'|'merge', ...参数 }
-     *   filter:  { type: 'filter', col, op, value }
-     *   sort:    { type: 'sort', col, order }
-     *   process: { type: 'process', col, op, value }
-     *   merge:   { type: 'merge', mergeType, files }
-     *   dataSource: 'original'|'previous'  // 新增：数据来源
+     * 规则处理统一入口，优先用Web Worker（大数据量），小数据量直接主线程
      */
     async handleRuleConfig(config) {
         // 只对非合并规则做上传校验
@@ -1221,116 +1231,153 @@ class RuleXcelApp {
             return;
         }
 
-        try {
-            this.progressManager.start('正在应用规则...');
-            let currentData;
-            // 数据来源判断
-            let dataSource = config.dataSource || 'original';
-            if (dataSource === 'previous' && (!this.currentData || !Array.isArray(this.currentData) || this.currentData.length === 0)) {
-                alert('上一步结果不可用，请先应用前置规则或选择原始数据');
-                return;
+        let currentData;
+        // 数据来源判断
+        let dataSource = config.dataSource || 'original';
+        if (dataSource === 'previous' && (!this.currentData || !Array.isArray(this.currentData) || this.currentData.length === 0)) {
+            alert('上一步结果不可用，请先应用前置规则或选择原始数据');
+            return;
+        }
+        // 合并规则：主流程统一使用主上传区数据
+        if (config.type === 'merge') {
+            const mergeType = config.mergeType;
+            if (!this.parsedData || this.parsedData.length === 0) {
+                throw new Error('请先在主上传区上传文件');
             }
-            // 合并规则：主流程统一使用主上传区数据
-            if (config.type === 'merge') {
-                const mergeType = config.mergeType;
-                if (!this.parsedData || this.parsedData.length === 0) {
-                    throw new Error('请先在主上传区上传文件');
+            let XLSX = window.XLSX;
+            if (!XLSX) {
+                XLSX = await import('../libs/xlsx.min.js').then(m => m.default || m);
+            }
+            const parseFile = async (fileObj) => {
+                if (fileObj.file) {
+                    const data = await fileObj.file.arrayBuffer();
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    return workbook;
+                } else if (fileObj.data) {
+                    return { Sheets: { Sheet1: XLSX.utils.json_to_sheet(fileObj.data) }, SheetNames: ['Sheet1'] };
                 }
-                let XLSX = window.XLSX;
-                if (!XLSX) {
-                    XLSX = await import('../libs/xlsx.min.js').then(m => m.default || m);
+                throw new Error('文件数据无效');
+            };
+            let mergedData = [];
+            if (mergeType === 'files') {
+                for (let i = 0; i < this.parsedData.length; i++) {
+                    const wb = await parseFile(this.parsedData[i]);
+                    const firstSheet = wb.SheetNames[0];
+                    const sheet = wb.Sheets[firstSheet];
+                    const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                    mergedData = mergedData.concat(json);
                 }
-                const parseFile = async (fileObj) => {
-                    if (fileObj.file) {
-                        const data = await fileObj.file.arrayBuffer();
-                        const workbook = XLSX.read(data, { type: 'array' });
-                        return workbook;
-                    } else if (fileObj.data) {
-                        return { Sheets: { Sheet1: XLSX.utils.json_to_sheet(fileObj.data) }, SheetNames: ['Sheet1'] };
-                    }
-                    throw new Error('文件数据无效');
-                };
-                let mergedData = [];
-                if (mergeType === 'files') {
-                    for (let i = 0; i < this.parsedData.length; i++) {
-                        const wb = await parseFile(this.parsedData[i]);
-                        const firstSheet = wb.SheetNames[0];
-                        const sheet = wb.Sheets[firstSheet];
-                        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-                        mergedData = mergedData.concat(json);
-                    }
-                } else if (mergeType === 'sheets') {
-                    const wb = await parseFile(this.parsedData[0]);
-                    wb.SheetNames.forEach(sheetName => {
-                        const sheet = wb.Sheets[sheetName];
-                        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-                        mergedData = mergedData.concat(json);
-                    });
-                } else {
-                    throw new Error('不支持的合并类型: ' + mergeType);
-                }
-                currentData = mergedData;
-                this.currentData = mergedData; // 修正：合并后立即赋值，保证链式数据流
-                this.ruleProcessor.updateData(currentData);
-                console.log('[DEBUG] 合并后 currentData:', currentData);
+            } else if (mergeType === 'sheets') {
+                const wb = await parseFile(this.parsedData[0]);
+                wb.SheetNames.forEach(sheetName => {
+                    const sheet = wb.Sheets[sheetName];
+                    const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                    mergedData = mergedData.concat(json);
+                });
             } else {
-                // 其它规则，数据来源已判断
-                if (dataSource === 'previous') {
-                    currentData = this.currentData;
-                } else {
-                    currentData = this.getCurrentDataForProcessing();
+                throw new Error('不支持的合并类型: ' + mergeType);
+            }
+            currentData = mergedData;
+            this.currentData = mergedData; // 修正：合并后立即赋值，保证链式数据流
+            this.ruleProcessor.updateData(currentData);
+            console.log('[DEBUG] 合并后 currentData:', currentData);
+        } else {
+            // 其它规则，数据来源已判断
+            if (dataSource === 'previous') {
+                currentData = this.currentData;
+            } else {
+                currentData = this.getCurrentDataForProcessing();
+            }
+            this.ruleProcessor.updateData(currentData);
+        }
+        // 应用规则
+        let result = currentData;
+        // 新增：规则应用前校验数据有效性
+        console.log('[DEBUG] 规则应用前 currentData:', currentData);
+        if (!Array.isArray(currentData) || currentData.length === 0) {
+            this.progressManager.error('当前数据无效，无法应用规则。请检查数据来源或先完成上一步操作。');
+            return;
+        }
+        // 判断是否用Worker（大于2000条用Worker，否则主线程）
+        const useWorker = currentData.length > 2000;
+        const batchSize = 500;
+        if (useWorker) {
+            // Worker处理
+            this.progressManager.setStepDetail(3, '数据处理中...(Web Worker)');
+            return await new Promise((resolve, reject) => {
+                let lastPercent = 0;
+                const onWorkerMsg = (e) => {
+                    const msg = e.data;
+                    if (msg.type === 'progress') {
+                        this.progressManager.setStepDetail(3, `已处理${msg.percent}%`);
+                        if (msg.percent === 100 && msg.partialResult) {
+                            this.dataPreview.setProcessedData(msg.partialResult.length > 100 ? msg.partialResult.slice(0, 100) : msg.partialResult);
+                        }
+                    } else if (msg.type === 'result') {
+                        this.processedData = msg.data;
+                        this.currentData = msg.data;
+                        this.dataHistory.push([...msg.data]);
+                        this.progressManager.setStepDetail(4, '更新预览中...');
+                        this.dataPreview.setProcessedData(msg.data);
+                        this.updateStats();
+                        this.progressManager.complete(`规则应用完成，处理了 ${msg.data.length} 行数据`);
+                        this.setCurrentStatus(config.type, config.dataSource);
+                        this.ruleWorker.removeEventListener('message', onWorkerMsg);
+                        resolve(msg.data);
+                    } else if (msg.type === 'error') {
+                        this.progressManager.error('规则处理失败: ' + msg.message);
+                        this.ruleWorker.removeEventListener('message', onWorkerMsg);
+                        reject(new Error(msg.message));
+                    }
+                };
+                this.ruleWorker.addEventListener('message', onWorkerMsg);
+                // 发送数据到Worker
+                let workerData = currentData;
+                let workerConfig = { ...config };
+                if (config.type === 'merge') {
+                    workerConfig.files = [currentData];
                 }
-                this.ruleProcessor.updateData(currentData);
-            }
-            // 应用规则
-            let result = currentData;
-            // 新增：规则应用前校验数据有效性
-            console.log('[DEBUG] 规则应用前 currentData:', currentData);
-            if (!Array.isArray(currentData) || currentData.length === 0) {
-                this.progressManager.error('当前数据无效，无法应用规则。请检查数据来源或先完成上一步操作。');
-                return;
-            }
+                this.ruleWorker.postMessage({ type: 'run', ruleConfig: workerConfig, data: workerData, batchSize });
+            });
+        } else {
+            // 主线程处理（调用原有异步方法）
+            const onProgress = (percent, partialResult) => {
+                this.progressManager.setStepDetail(3, `已处理${percent}%`);
+                if (percent === 100) {
+                    this.dataPreview.setProcessedData(partialResult.length > 100 ? partialResult.slice(0, 100) : partialResult);
+                }
+            };
             switch (config.type) {
                 case 'filter':
                     this.progressManager.setStepDetail(3, '筛选数据中...');
-                    result = this.ruleProcessor.filter(config);
+                    result = await this.ruleProcessor.filterAsync(config, onProgress, batchSize);
                     break;
                 case 'sort':
                     this.progressManager.setStepDetail(3, '排序数据中...');
-                    result = this.ruleProcessor.sort(config);
+                    result = await this.ruleProcessor.sortAsync(config, onProgress, batchSize);
                     break;
                 case 'process':
                     this.progressManager.setStepDetail(3, '处理列数据中...');
-                    result = this.ruleProcessor.process(config);
+                    result = await this.ruleProcessor.processAsync(config, onProgress, batchSize);
                     break;
                 case 'merge':
                     this.progressManager.setStepDetail(3, '合并表格中...');
-                    result = this.ruleProcessor.merge({ ...config, files: [currentData] });
+                    result = await this.ruleProcessor.mergeAsync({ ...config, files: [currentData] }, onProgress, batchSize);
                     this.parsedData = [{ data: result, fileName: '合并结果' }];
                     break;
                 default:
                     throw new Error(`未知的规则类型: ${config.type}`);
             }
             this.processedData = result;
+            this.currentData = result;
+            this.dataHistory.push([...result]);
             this.progressManager.setStepDetail(4, '更新预览中...');
             this.dataPreview.setProcessedData(result);
             this.updateStats();
             this.progressManager.complete(`规则应用完成，处理了 ${result.length} 行数据`);
-            console.log(`规则应用成功，生成 ${result.length} 行数据`);
-        } catch (error) {
-            console.error('规则应用失败:', error);
-            this.progressManager.error(`规则应用失败: ${error.message}`);
-            console.error(`规则应用失败: ${error.message}`);
+            this.setCurrentStatus(config.type, config.dataSource);
+            return result;
         }
-        this.currentData = this.processedData;
-        // 规则应用后，保存历史
-        if (Array.isArray(this.currentData)) {
-            this.dataHistory.push([...this.currentData]);
-        }
-        // 规则应用后，自动更新当前数据状态提示
-        this.setCurrentStatus(config.type, config.dataSource);
-        // 规则应用后，自动刷新预览区
-        this.dataPreview.setProcessedData(this.processedData);
     }
 
     /**

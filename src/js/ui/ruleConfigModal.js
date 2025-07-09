@@ -4,9 +4,20 @@
  * @author AI
  */
 class RuleConfigModal {
+  // 记录所有绑定事件，便于销毁时统一解绑
   constructor(columnMapper) {
     this.currentRule = null;
     this.columnMapper = columnMapper;
+    this._eventUnbinders = [];
+  }
+
+  // 弹窗销毁时统一解绑所有事件
+  destroyPanelEvents(panel) {
+    if (this._eventUnbinders) {
+      this._eventUnbinders.forEach(unbind => { try { unbind(); } catch(e){} });
+      this._eventUnbinders = [];
+    }
+    if (panel) panel.innerHTML = '';
   }
 
   /**
@@ -17,10 +28,62 @@ class RuleConfigModal {
     this.onConfig = cb;
   }
 
-  // 显示筛选数据配置（内嵌模块重构）
+  // 通用节流函数
+  throttle(fn, delay = 50) {
+    let last = 0;
+    return function(...args) {
+      const now = Date.now();
+      if (now - last > delay) {
+        last = now;
+        fn.apply(this, args);
+      }
+    };
+  }
+  // 通用防抖函数
+  debounce(fn, delay = 200) {
+    let timer = null;
+    return function(...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn.apply(this, args), delay);
+    };
+  }
+
+  // 虚拟化渲染下拉选项（只渲染前20条，滚动时动态加载，onwheel节流）
+  renderVirtualizedSelect(selectEl, options, visibleCount = 20) {
+    selectEl.innerHTML = '';
+    let start = 0;
+    let end = Math.min(visibleCount, options.length);
+    const render = () => {
+      selectEl.innerHTML = '';
+      for (let i = start; i < end; i++) {
+        const opt = document.createElement('option');
+        opt.value = options[i];
+        opt.textContent = options[i];
+        selectEl.appendChild(opt);
+      }
+    };
+    render();
+    // 节流onwheel
+    const throttledWheel = this.throttle((e) => {
+      if (e.deltaY > 0 && end < options.length) {
+        start = Math.min(start + 1, options.length - visibleCount);
+        end = start + visibleCount;
+        render();
+      } else if (e.deltaY < 0 && start > 0) {
+        start = Math.max(start - 1, 0);
+        end = start + visibleCount;
+        render();
+      }
+    }, 50);
+    selectEl.onwheel = throttledWheel;
+  }
+
+  // 优化后的showFilterConfig，按钮加节流，输入加防抖
   showFilterConfig(columns = ['A', 'B', 'C'], hasPrevious = false) {
+    console.time('showFilterConfig');
     const panel = document.getElementById('ruleConfigPanel');
     if (!panel) return;
+    this.destroyPanelEvents(panel);
     panel.innerHTML = `
       <div class="rule-config-panel">
         <h3>筛选数据配置</h3>
@@ -40,9 +103,7 @@ class RuleConfigModal {
           </div>
           <div class="form-control">
             <label for="filter-col">选择列</label>
-            <select id="filter-col" class="select select-bordered">
-              ${columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-            </select>
+            <select id="filter-col" class="select select-bordered"></select>
           </div>
           <div class="form-control">
             <label for="filter-op">筛选条件</label>
@@ -69,24 +130,52 @@ class RuleConfigModal {
         </form>
       </div>
     `;
-    panel.querySelector('form').onsubmit = e => e.preventDefault();
-    panel.querySelector('#filter-apply').onclick = () => {
+    // 虚拟化渲染列选项
+    const colSel = panel.querySelector('#filter-col');
+    this.renderVirtualizedSelect(colSel, columns);
+    // 事件绑定
+    const form = panel.querySelector('form');
+    form.onsubmit = e => e.preventDefault();
+    const applyBtn = panel.querySelector('#filter-apply');
+    const cancelBtn = panel.querySelector('#filter-cancel');
+    // 输入框防抖（如有复杂校验/联动）
+    const valueInput = panel.querySelector('#filter-value');
+    if (valueInput) {
+      valueInput.oninput = this.debounce(function() {
+        // 可在此处做实时校验、联动等
+        // console.log('输入值:', valueInput.value);
+      }, 200);
+      this._eventUnbinders.push(() => { valueInput.oninput = null; });
+    }
+    // 按钮节流
+    const throttledApply = this.throttle(() => {
       const col = panel.querySelector('#filter-col').value;
       const op = panel.querySelector('#filter-op').value;
       const value = panel.querySelector('#filter-value').value;
       const dataSource = panel.querySelector('input[name="data-source"]:checked').value;
       this.collectConfigData({type: 'filter', col, op, value, dataSource});
-      panel.innerHTML = '';
-    };
-    panel.querySelector('#filter-cancel').onclick = () => {
-      panel.innerHTML = '';
-    };
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showFilterConfig');
+    }, 300);
+    applyBtn.onclick = throttledApply;
+    const throttledCancel = this.throttle(() => {
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showFilterConfig');
+    }, 300);
+    cancelBtn.onclick = throttledCancel;
+    this._eventUnbinders.push(() => { applyBtn.onclick = null; });
+    this._eventUnbinders.push(() => { cancelBtn.onclick = null; });
+    this._eventUnbinders.push(() => { form.onsubmit = null; });
+    this._eventUnbinders.push(() => { colSel.onwheel = null; });
+    console.timeEnd('showFilterConfig');
   }
 
-  // 显示排序数据配置（内嵌模块重构）
+  // 优化后的showSortConfig，按钮加节流，输入加防抖
   showSortConfig(columns = ['A', 'B', 'C'], hasPrevious = false) {
+    console.time('showSortConfig');
     const panel = document.getElementById('ruleConfigPanel');
     if (!panel) return;
+    this.destroyPanelEvents(panel);
     panel.innerHTML = `
       <div class="rule-config-panel">
         <h3>排序数据配置</h3>
@@ -106,9 +195,7 @@ class RuleConfigModal {
           </div>
           <div class="form-control">
             <label for="sort-col">选择列</label>
-            <select id="sort-col" class="select select-bordered">
-              ${columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-            </select>
+            <select id="sort-col" class="select select-bordered"></select>
           </div>
           <div class="form-control">
             <label>排序方式</label>
@@ -131,23 +218,49 @@ class RuleConfigModal {
         </form>
       </div>
     `;
-    panel.querySelector('form').onsubmit = e => e.preventDefault();
-    panel.querySelector('#sort-apply').onclick = () => {
+    // 虚拟化渲染列选项
+    const colSel = panel.querySelector('#sort-col');
+    this.renderVirtualizedSelect(colSel, columns);
+    const form = panel.querySelector('form');
+    form.onsubmit = e => e.preventDefault();
+    const applyBtn = panel.querySelector('#sort-apply');
+    const cancelBtn = panel.querySelector('#sort-cancel');
+    // 输入框防抖（如有）
+    const valueInput = panel.querySelector('#sort-value');
+    if (valueInput) {
+      valueInput.oninput = this.debounce(function() {
+        // 实时校验、联动等
+      }, 200);
+      this._eventUnbinders.push(() => { valueInput.oninput = null; });
+    }
+    // 按钮节流
+    const throttledApply = this.throttle(() => {
       const col = panel.querySelector('#sort-col').value;
       const order = panel.querySelector('input[name="sort-order"]:checked').value;
       const dataSource = panel.querySelector('input[name="data-source"]:checked').value;
       this.collectConfigData({type: 'sort', col, order, dataSource});
-      panel.innerHTML = '';
-    };
-    panel.querySelector('#sort-cancel').onclick = () => {
-      panel.innerHTML = '';
-    };
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showSortConfig');
+    }, 300);
+    applyBtn.onclick = throttledApply;
+    const throttledCancel = this.throttle(() => {
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showSortConfig');
+    }, 300);
+    cancelBtn.onclick = throttledCancel;
+    this._eventUnbinders.push(() => { applyBtn.onclick = null; });
+    this._eventUnbinders.push(() => { cancelBtn.onclick = null; });
+    this._eventUnbinders.push(() => { form.onsubmit = null; });
+    this._eventUnbinders.push(() => { colSel.onwheel = null; });
+    console.timeEnd('showSortConfig');
   }
 
-  // 显示处理列配置（重构：加法/比对）
+  // 优化后的showProcessConfig，按钮加节流，输入加防抖
   showProcessConfig(columns = ['A', 'B', 'C'], hasPrevious = false) {
+    console.time('showProcessConfig');
     const panel = document.getElementById('ruleConfigPanel');
     if (!panel) return;
+    this.destroyPanelEvents(panel);
     panel.innerHTML = `
       <div class="rule-config-panel">
         <h3>处理列配置</h3>
@@ -179,9 +292,7 @@ class RuleConfigModal {
             </div>
             <div class="input-hint">加法：对单列加数；比对：两列逐行比较</div>
           </div>
-          <div class="form-control" id="process-col-area">
-            <!-- 动态插入列选择和参数输入 -->
-          </div>
+          <div class="form-control" id="process-col-area"></div>
           <div class="btn-group">
             <button type="button" id="process-apply" class="btn btn-primary">立即应用</button>
             <button type="button" id="process-cancel" class="btn btn-secondary">取消</button>
@@ -189,47 +300,72 @@ class RuleConfigModal {
         </form>
       </div>
     `;
-    // 列选择区渲染函数
-    function renderColArea(op) {
-      const area = panel.querySelector('#process-col-area');
+    // 虚拟化渲染列选择区
+    const area = panel.querySelector('#process-col-area');
+    const renderColAreaAsync = (op) => {
+      area.innerHTML = '';
       if (op === 'add') {
-        area.innerHTML = `
-          <label for="process-col">选择列</label>
-          <select id="process-col" class="select select-bordered">
-            ${columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-          </select>
-          <div class="input-hint" style="margin-top:8px;">将自动计算所选列所有数据之和，并显示在最后一行</div>
-        `;
+        const label = document.createElement('label');
+        label.textContent = '选择列';
+        const sel = document.createElement('select');
+        sel.id = 'process-col';
+        sel.className = 'select select-bordered';
+        area.appendChild(label);
+        area.appendChild(sel);
+        this.renderVirtualizedSelect(sel, columns);
+        this._eventUnbinders.push(() => { sel.onwheel = null; });
       } else {
-        area.innerHTML = `
-          <label for="process-col1">比对列1</label>
-          <select id="process-col1" class="select select-bordered">
-            ${columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-          </select>
-          <label for="process-col2" style="margin-top:8px;">比对列2</label>
-          <select id="process-col2" class="select select-bordered">
-            ${columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-          </select>
-          <label for="cmp-type" style="margin-top:8px;">比对方式</label>
-          <select id="cmp-type" class="select select-bordered">
-            <option value="gt">大于</option>
-            <option value="eq">等于</option>
-            <option value="lt">小于</option>
-          </select>
-          <div class="input-hint">比对方式：列1 与 列2 逐行比较</div>
-        `;
+        // 比对模式，两个下拉
+        const label1 = document.createElement('label');
+        label1.textContent = '比对列1';
+        const sel1 = document.createElement('select');
+        sel1.id = 'process-col1';
+        sel1.className = 'select select-bordered';
+        area.appendChild(label1);
+        area.appendChild(sel1);
+        this.renderVirtualizedSelect(sel1, columns);
+        this._eventUnbinders.push(() => { sel1.onwheel = null; });
+        const label2 = document.createElement('label');
+        label2.textContent = '比对列2';
+        const sel2 = document.createElement('select');
+        sel2.id = 'process-col2';
+        sel2.className = 'select select-bordered';
+        area.appendChild(label2);
+        area.appendChild(sel2);
+        this.renderVirtualizedSelect(sel2, columns);
+        this._eventUnbinders.push(() => { sel2.onwheel = null; });
+        const cmpTypeLabel = document.createElement('label');
+        cmpTypeLabel.textContent = '比对方式';
+        const cmpTypeSel = document.createElement('select');
+        cmpTypeSel.id = 'cmp-type';
+        cmpTypeSel.className = 'select select-bordered';
+        area.appendChild(cmpTypeLabel);
+        area.appendChild(cmpTypeSel);
+        this.renderVirtualizedSelect(cmpTypeSel, ['gt', 'eq', 'lt']);
+        this._eventUnbinders.push(() => { cmpTypeSel.onwheel = null; });
       }
-    }
-    // 初始渲染
-    renderColArea('add');
-    // 监听操作类型切换
+    };
+    renderColAreaAsync('add');
     panel.querySelectorAll('input[name="process-op"]').forEach(radio => {
       radio.onchange = e => {
-        renderColArea(e.target.value);
+        renderColAreaAsync(e.target.value);
       };
+      this._eventUnbinders.push(() => { radio.onchange = null; });
     });
-    panel.querySelector('form').onsubmit = e => e.preventDefault();
-    panel.querySelector('#process-apply').onclick = () => {
+    const form = panel.querySelector('form');
+    form.onsubmit = e => e.preventDefault();
+    const applyBtn = panel.querySelector('#process-apply');
+    const cancelBtn = panel.querySelector('#process-cancel');
+    // 输入框防抖（如有）
+    const valueInput = panel.querySelector('#process-value');
+    if (valueInput) {
+      valueInput.oninput = this.debounce(function() {
+        // 实时校验、联动等
+      }, 200);
+      this._eventUnbinders.push(() => { valueInput.oninput = null; });
+    }
+    // 按钮节流
+    const throttledApply = this.throttle(() => {
       const op = panel.querySelector('input[name="process-op"]:checked').value;
       const dataSource = panel.querySelector('input[name="data-source"]:checked').value;
       if (op === 'add') {
@@ -245,11 +381,20 @@ class RuleConfigModal {
         }
         this.collectConfigData({type: 'process', op: 'cmp', col1, col2, cmpType, dataSource});
       }
-      panel.innerHTML = '';
-    };
-    panel.querySelector('#process-cancel').onclick = () => {
-      panel.innerHTML = '';
-    };
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showProcessConfig');
+    }, 300);
+    applyBtn.onclick = throttledApply;
+    const throttledCancel = this.throttle(() => {
+      this.destroyPanelEvents(panel);
+      console.timeEnd('showProcessConfig');
+    }, 300);
+    cancelBtn.onclick = throttledCancel;
+    this._eventUnbinders.push(() => { applyBtn.onclick = null; });
+    this._eventUnbinders.push(() => { cancelBtn.onclick = null; });
+    this._eventUnbinders.push(() => { form.onsubmit = null; });
+    this._eventUnbinders.push(() => { colSel.onwheel = null; });
+    console.timeEnd('showProcessConfig');
   }
 
   /**
@@ -258,6 +403,7 @@ class RuleConfigModal {
   showMergeConfig(uploadedFiles = [], hasPrevious = false) {
     const panel = document.getElementById('ruleConfigPanel');
     if (!panel) return;
+    this.destroyPanelEvents(panel);
     panel.innerHTML = `
       <div class="rule-config-panel">
         <h3>合并表格配置</h3>
@@ -303,24 +449,32 @@ class RuleConfigModal {
         </form>
       </div>
     `;
-    panel.querySelector('form').onsubmit = e => e.preventDefault();
-    panel.querySelector('#merge-apply').onclick = () => {
+    const form = panel.querySelector('form');
+    form.onsubmit = e => e.preventDefault();
+    const applyBtn = panel.querySelector('#merge-apply');
+    const cancelBtn = panel.querySelector('#merge-cancel');
+    applyBtn.onclick = () => {
       const type = panel.querySelector('input[name="merge-type"]:checked').value;
       const dataSource = panel.querySelector('input[name="data-source"]:checked').value;
       // 只收集合并类型参数
       this.collectConfigData({ type: 'merge', mergeType: type, dataSource });
-      panel.innerHTML = '';
+      this.destroyPanelEvents(panel);
     };
-    panel.querySelector('#merge-cancel').onclick = () => {
-      panel.innerHTML = '';
+    cancelBtn.onclick = () => {
+      this.destroyPanelEvents(panel);
     };
+    this._eventUnbinders.push(() => { applyBtn.onclick = null; });
+    this._eventUnbinders.push(() => { cancelBtn.onclick = null; });
+    this._eventUnbinders.push(() => { form.onsubmit = null; });
   }
 
   // 收集配置数据
   collectConfigData(config) {
+    console.time('collectConfigData');
     if (typeof this.onConfig === 'function') {
       this.onConfig(config);
     }
+    console.timeEnd('collectConfigData');
   }
 }
 
